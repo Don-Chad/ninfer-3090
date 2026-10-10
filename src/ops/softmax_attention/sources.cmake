@@ -22,6 +22,7 @@ if(CMAKE_CUDA_ARCHITECTURES MATCHES "^(80|86|89)$")
     "${CMAKE_CURRENT_LIST_DIR}/dense/causal_cache/small_t_nvfp4.cu"
     "${CMAKE_CURRENT_LIST_DIR}/dense/causal_cache/small_t_k8v4.cu"
     "${CMAKE_CURRENT_LIST_DIR}/dense/causal_cache/prompt.cu"
+    "${CMAKE_CURRENT_LIST_DIR}/dense/causal_cache/prompt_i8_fa2.cu"
     "${CMAKE_CURRENT_LIST_DIR}/dense/causal_cache/prompt_fp8.cu"
     "${CMAKE_CURRENT_LIST_DIR}/dense/causal_cache/prompt_nvfp4.cu"
     "${CMAKE_CURRENT_LIST_DIR}/dense/causal_cache/prompt_k8v4.cu"

@@ -15,6 +15,8 @@ namespace ninfer::models::qwen3_5::detail {
 struct MtpGraphAttention {
     ops::AttentionHeadGeometry geometry;
     KvCacheStorage storage = KvCacheStorage::BFloat16;
+    // The executing device's SM count, which the INT8-G64 prompt route plans its launch from.
+    std::int32_t multiprocessor_count = 0;
 };
 
 [[nodiscard]] std::vector<GraphExecutionProfile> mtp_graph_profiles(

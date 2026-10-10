@@ -2,6 +2,7 @@
 
 // ninfer::ops::detail - private launch prototypes for causal_softmax_attention policies.
 
+#include "core/arena.h"
 #include "core/paged_kv_cache.h"
 #include "core/tensor.h"
 #include "ninfer/ops/softmax_attention.h"
@@ -91,14 +92,34 @@ void causal_attention_cached_small_t_k8v4_launch(const Tensor& q, const Tensor& 
                                                  Tensor& partial_l, Tensor& out,
                                                  cudaStream_t stream);
 
+// The INT8-G64 cache over more than kCausalPromptFa2MinVisibleKeys keys runs the FA2-style kernel
+// (prompt_i8_fa2.cuh), whose launch plan reads the envelope and SM count and whose key splits
+// suballocate their partials from `workspace`; every other launch ignores those three arguments.
 void causal_attention_prompt_launch(const Tensor& q, const Tensor& k, const Tensor& v,
                                     const Tensor& positions, const Tensor& valid_columns,
                                     const Tensor& table_rows, float scale,
-                                    PagedKVBatchLayerView cache, Tensor& out, cudaStream_t stream);
+                                    PagedKVBatchLayerView cache,
+                                    CausalAttentionExecutionEnvelope envelope,
+                                    WorkspaceArena& workspace, std::int32_t multiprocessor_count,
+                                    Tensor& out, cudaStream_t stream);
 
 void causal_attention_prompt_attention_launch(const Tensor& q, const Tensor& positions, float scale,
-                                              const PagedKVLayerView& cache, Tensor& out,
+                                              const PagedKVLayerView& cache,
+                                              CausalAttentionExecutionEnvelope envelope,
+                                              WorkspaceArena& workspace,
+                                              std::int32_t multiprocessor_count, Tensor& out,
                                               cudaStream_t stream);
+
+void causal_attention_prompt_i8_fa2_attention_launch(
+    const Tensor& q, const Tensor& positions, float scale, const PagedKVLayerView& cache,
+    CausalAttentionExecutionEnvelope envelope, WorkspaceArena& workspace,
+    std::int32_t multiprocessor_count, Tensor& out, cudaStream_t stream);
+
+void causal_attention_prompt_i8_fa2_batch_attention_launch(
+    const Tensor& q, const Tensor& positions, const Tensor& valid_columns, const Tensor& table_rows,
+    float scale, const PagedKVBatchLayerView& cache, CausalAttentionExecutionEnvelope envelope,
+    WorkspaceArena& workspace, std::int32_t multiprocessor_count, Tensor& out,
+    cudaStream_t stream);
 
 void causal_attention_prompt_fp8_launch(const Tensor& q, const Tensor& k, const Tensor& v,
                                         const Tensor& positions, const Tensor& valid_columns,

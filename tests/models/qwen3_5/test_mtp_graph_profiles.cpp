@@ -153,7 +153,9 @@ int main() {
             for (std::uint32_t draft_window = 1; draft_window <= kSweptDraftWindows;
                  ++draft_window) {
                 for (const KvCacheStorage storage : kStorages) {
-                    check(capacity, draft_window, {.geometry = geometry, .storage = storage});
+                    // 82 SMs: the RTX 3090 the sm_86 route tables were measured on.
+                    check(capacity, draft_window,
+                          {.geometry = geometry, .storage = storage, .multiprocessor_count = 82});
                 }
             }
         }

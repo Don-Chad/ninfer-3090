@@ -213,6 +213,8 @@ struct AttentionCase {
     std::uint32_t seed;
     bool zero_q       = false;
     bool graph_replay = false;
+    // Half-width of the uniform V distribution, for the cached rows and the appended ones.
+    float v_amplitude = 1.0f;
 };
 
 enum class MappingPattern { Identity, Offset, Fragmented };
@@ -1045,11 +1047,12 @@ HostCache make_cache(const Geometry& geometry, const CachePlan& plan, std::int32
 // covers (BFloat16/Int8Group64/Fp8E4M3Row256), so DeviceCache/verify_cache work identically
 // whichever overload produced the HostCache; nvfp4/k8v4 never read those fields.
 HostCache make_cache(const Geometry& geometry, KvCacheStorage storage, std::int32_t max_context,
-                     std::uint32_t seed) {
+                     std::uint32_t seed, float v_amplitude = 1.0f) {
     const std::int32_t logical_capacity = align_up_page(max_context);
     const std::size_t elements          = cache_elements(geometry, logical_capacity);
     std::vector<float> logical_k        = make_bf16_values(elements, seed, -0.25f, 0.25f);
-    std::vector<float> logical_v        = make_bf16_values(elements, seed + 1u, -1.0f, 1.0f);
+    std::vector<float> logical_v =
+        make_bf16_values(elements, seed + 1u, -v_amplitude, v_amplitude);
 
     if (storage == KvCacheStorage::Nvfp4Group16 || storage == KvCacheStorage::Fp8KeyNvfp4Value) {
         HostCache cache{.geometry         = geometry,
@@ -2433,7 +2436,8 @@ int run_a1_case(const Geometry& geometry, KvCacheStorage storage, const Attentio
     std::vector<float> q = make_bf16_values(q_elements, test_case.seed, -0.25f, 0.25f);
     if (test_case.zero_q) std::fill(q.begin(), q.end(), 0.0f);
     std::vector<float> k = make_bf16_values(kv_elements, test_case.seed + 1u, -0.25f, 0.25f);
-    std::vector<float> v = make_bf16_values(kv_elements, test_case.seed + 2u, -1.0f, 1.0f);
+    std::vector<float> v = make_bf16_values(kv_elements, test_case.seed + 2u,
+                                            -test_case.v_amplitude, test_case.v_amplitude);
     inject_codec_edges(geometry, test_case.tokens, k, v);
     std::vector<std::int32_t> positions(static_cast<std::size_t>(test_case.tokens));
     for (std::int32_t token = 0; token < test_case.tokens; ++token) {
@@ -2442,7 +2446,8 @@ int run_a1_case(const Geometry& geometry, KvCacheStorage storage, const Attentio
     ops::CausalAttentionExecutionEnvelope envelope{static_cast<std::uint32_t>(total),
                                                    test_case.envelope_max};
 
-    const HostCache initial = make_cache(geometry, storage, max_context, test_case.seed + 10u);
+    const HostCache initial = make_cache(geometry, storage, max_context, test_case.seed + 10u,
+                                         test_case.v_amplitude);
     HostCache expected      = initial;
     append_cache(expected, k, v, positions);
     const std::vector<double> reference =
@@ -2633,7 +2638,8 @@ int run_a3_case(const Geometry& geometry, KvCacheStorage storage, const Attentio
     const ops::CausalAttentionExecutionEnvelope envelope{static_cast<std::uint32_t>(total),
                                                          test_case.envelope_max};
 
-    const HostCache cache_host = make_cache(geometry, storage, max_context, test_case.seed + 10u);
+    const HostCache cache_host = make_cache(geometry, storage, max_context, test_case.seed + 10u,
+                                            test_case.v_amplitude);
     const std::vector<double> reference =
         ideal_attention(select_query_columns(q, kHeadDim * geometry.q_heads, oracle_queries),
                         cache_host, select_query_columns(positions, 1, oracle_queries));
@@ -3529,6 +3535,174 @@ int run_k8v4_prompt_cases() {
     return failures;
 }
 
+// The INT8-G64 prompt route over more than 256 visible keys (fewer keep the tiled kernel, which
+// run_geometry covers): register-resident FA2-style CTAs of four or eight warps, FP16 PV
+// accumulation per 64-key tile under a power-of-two V-scale shift, and, from W = 17, key splits
+// merged in FP32.
+// Cases follow Infernix's qualification of the same kernel (V amplitude on either side of the FP16
+// shift, 3584- and 4096-token chunks at context 0 and after an 8K history with sampled query rows)
+// plus split launches over 4K and 33K histories with partial last row blocks and pages, an envelope
+// past the populated keys, the plan's own width and history boundaries at b-1/b/b+1, the cached
+// entry, a masked batch row and graph replay. Whether a launch splits is read from the public
+// launch shape (a split adds the merge kernel), so the plan constants can move without the cases
+// silently losing their split coverage.
+bool int8_prompt_splits(const Geometry& geometry, std::int32_t tokens, std::uint32_t visible_keys) {
+    return ops::causal_softmax_attention_launch_shape(
+               op_geometry(geometry), KvCacheStorage::Int8Group64, {1, visible_keys}, 1, tokens,
+               test_execution())
+               .kernel_nodes == 3U;
+}
+
+std::vector<int> sampled_query_rows(std::int32_t tokens) {
+    std::vector<int> rows;
+    for (const int row : {0, 1, 63, 64, 127, 128, tokens / 2, tokens - 129, tokens - 128,
+                          tokens - 65, tokens - 64, tokens - 2, tokens - 1}) {
+        if (row >= 0 && row < tokens && std::find(rows.begin(), rows.end(), row) == rows.end()) {
+            rows.push_back(row);
+        }
+    }
+    std::sort(rows.begin(), rows.end());
+    return rows;
+}
+
+int run_int8_prompt_cases() {
+    std::cout << "  int8-g64 FA2 prompt route (FP16 PV accumulation, key splits):\n";
+    constexpr KvCacheStorage kInt8 = KvCacheStorage::Int8Group64;
+    int failures = 0;
+    for (const Geometry& geometry : kGeometries) {
+        int split_launches = 0;
+        const auto a1 = [&](const AttentionCase& test_case, MappingPattern mapping,
+                            bool sample_rows = true) {
+            if (int8_prompt_splits(geometry, test_case.tokens, test_case.envelope_max)) {
+                ++split_launches;
+            }
+            const std::vector<int> rows =
+                sample_rows ? sampled_query_rows(test_case.tokens) : std::vector<int>{};
+            return run_a1_case(geometry, kInt8, test_case, mapping, rows);
+        };
+        const auto a3 = [&](const AttentionCase& test_case, MappingPattern mapping) {
+            if (int8_prompt_splits(geometry, test_case.tokens, test_case.envelope_max)) {
+                ++split_launches;
+            }
+            const std::vector<int> rows = sampled_query_rows(test_case.tokens);
+            return run_a3_case(geometry, kInt8, test_case, mapping, rows);
+        };
+
+        // V group scales of 2048/127 force the FP16 partial shift; 900/127 sits just inside the
+        // unshifted 64 * 127 * 8 bound. Both narrow (four-warp) and split launches.
+        failures += a1({65, 263, 392, 2101u, false, false, 2048.0f}, MappingPattern::Fragmented,
+                       false);
+        failures += a1({65, 263, 392, 2102u, false, false, 900.0f}, MappingPattern::Fragmented,
+                       false);
+        failures += a1({200, 4100, 4300, 2103u, false, false, 2048.0f}, MappingPattern::Fragmented);
+        failures += a3({300, 2000, 2300, 2104u, false, false, 900.0f}, MappingPattern::Offset);
+
+        // Full prefill chunks as the first chunk and after an 8K history.
+        const std::array<int, 6> chunk_rows_3584{0, 127, 128, 1791, 3584 - 128, 3584 - 1};
+        const std::array<int, 6> chunk_rows_4096{0, 127, 128, 1791, 4096 - 128, 4096 - 1};
+        failures += run_a1_case(geometry, kInt8, {3584, 0, 3584, 2111u},
+                                MappingPattern::Fragmented, chunk_rows_3584);
+        failures += run_a1_case(geometry, kInt8, {4096, 0, 4096, 2112u},
+                                MappingPattern::Fragmented, chunk_rows_4096);
+        failures += run_a1_case(geometry, kInt8, {3584, 8192, 8192 + 3584, 2113u},
+                                MappingPattern::Fragmented, chunk_rows_3584);
+        failures += run_a1_case(geometry, kInt8, {4096, 8192, 8192 + 4096, 2114u},
+                                MappingPattern::Fragmented, chunk_rows_4096);
+
+        // Short follow-ups over long histories: the split domain, with partial last row blocks
+        // and a partial last page (neither history is a multiple of 64).
+        std::uint32_t seed = 2120u;
+        for (const std::int32_t base : {4100, 33000}) {
+            for (const std::int32_t tokens : {17, 200, 257, 513, 1100}) {
+                failures += a1({tokens, base, static_cast<std::uint32_t>(base + tokens), seed++},
+                               MappingPattern::Fragmented, tokens > 17);
+            }
+        }
+        // Envelopes past the populated keys plan more splits than the live rows can fill, so
+        // trailing splits sweep no key and publish neutral statistics.
+        failures += a1({200, 4100, 40000, seed++}, MappingPattern::Fragmented);
+        failures += a3({257, 4100, 40000, seed++}, MappingPattern::Fragmented);
+        // Cached entry, and graph replay of a split and of an unsplit launch.
+        failures += a3({513, 33000, 33513, seed++}, MappingPattern::Fragmented);
+        failures += a1({200, 33000, 33200, seed++, false, true}, MappingPattern::Fragmented);
+        failures += a1({100, 400, 500, seed++, false, true}, MappingPattern::Fragmented, false);
+        // The first launch past the tiled-kernel window, and the last one inside it.
+        failures += a1({17, 240, 257, seed++}, MappingPattern::Fragmented, false);
+        failures += a1({17, 239, 256, seed++}, MappingPattern::Fragmented, false);
+
+        // The plan's own boundaries: the widths at which a launch over a 33K history starts or
+        // stops splitting, and the history at which a 200-column launch starts.
+        constexpr std::int32_t kBoundaryBase = 33000;
+        int width_boundaries = 0;
+        for (std::int32_t tokens = 18; tokens <= 2048 && width_boundaries < 2; ++tokens) {
+            const auto keys = [&](std::int32_t t) {
+                return static_cast<std::uint32_t>(kBoundaryBase + t);
+            };
+            if (int8_prompt_splits(geometry, tokens, keys(tokens)) ==
+                int8_prompt_splits(geometry, tokens - 1, keys(tokens - 1))) {
+                continue;
+            }
+            ++width_boundaries;
+            for (const std::int32_t t : {tokens - 1, tokens, tokens + 1}) {
+                failures += a1({t, kBoundaryBase, keys(t), seed++}, MappingPattern::Fragmented);
+            }
+        }
+        for (std::uint32_t keys = 257; keys <= 40000; ++keys) {
+            if (!int8_prompt_splits(geometry, 200, keys)) { continue; }
+            for (const std::uint32_t k : {keys - 1, keys, keys + 1}) {
+                failures += a1({200, static_cast<std::int32_t>(k) - 200, k, seed++},
+                               MappingPattern::Offset);
+            }
+            break;
+        }
+
+        // A masked single-row batch: 17 live columns of 65 over an 8K history, under a 33K
+        // envelope that plans a split launch.
+        if (int8_prompt_splits(geometry, 65, 33000)) { ++split_launches; }
+        failures += run_batch_case(geometry, kInt8,
+                                   {65, {8191}, {17}, {0}, MappingPattern::Fragmented, seed++},
+                                   33000);
+
+        if (split_launches == 0) {
+            std::cerr << "int8-g64 prompt cases " << geometry.name
+                      << " exercised no split launch\n";
+            ++failures;
+        }
+    }
+    return failures;
+}
+
+// A plan at an envelope's maximum must bound the scratch of every launch inside it: the capacity
+// at fewer visible keys never exceeds the capacity at more. The split partials also stay inside
+// the internal budget.
+int verify_int8_prompt_split_capacity() {
+    int failures = 0;
+    for (const auto& geometry : kGeometries) {
+        for (const int sm_count : {82, 170}) {
+            const DeviceExecutionView execution{nullptr, sm_count};
+            for (const std::int32_t width : {17, 63, 64, 65, 128, 129, 200, 257, 384, 513, 1024,
+                                             1100, 2048, 4096}) {
+                std::size_t previous = 0;
+                for (std::uint32_t keys = static_cast<std::uint32_t>(width); keys <= 262144;
+                     keys = keys * 9 / 8 + 1) {
+                    const std::size_t capacity =
+                        ops::causal_softmax_attention_workspace_capacity_bytes(
+                            op_geometry(geometry), KvCacheStorage::Int8Group64, {1, keys}, 1,
+                            width, width, execution);
+                    if (capacity < previous || capacity > (std::size_t{64} << 20) + 512) {
+                        std::cerr << "int8-g64 prompt split capacity " << geometry.name
+                                  << " SM=" << sm_count << " W=" << width << " keys=" << keys
+                                  << ": " << capacity << " after " << previous << '\n';
+                        ++failures;
+                    }
+                    previous = std::max(previous, capacity);
+                }
+            }
+        }
+    }
+    return failures;
+}
+
 int verify_workspace_capacity_contract() {
     int failures = 0;
     // NVFP4/K8V4 are recognized KvCacheStorage selections but not ported on this fork (see
@@ -3785,6 +3959,18 @@ int run_batch_profile_validation_cases() {
         ++failures;
     }
     return failures;
+}
+
+int run_softmax_attention_int8_prompt_tests() {
+    int failures = verify_int8_prompt_split_capacity();
+    if (cuda_unavailable()) {
+        std::cout << "SKIP: no usable CUDA device\n";
+        return 77;
+    }
+    failures += run_int8_prompt_cases();
+    std::cout << (failures == 0 ? "PASS" : "FAIL")
+              << " causal_softmax_attention int8-g64 prompt route\n";
+    return failures == 0 ? 0 : 1;
 }
 
 int run_softmax_attention_dflash2_tests() {

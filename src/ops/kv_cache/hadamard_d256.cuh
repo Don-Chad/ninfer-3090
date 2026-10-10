@@ -43,25 +43,38 @@ normalized_hadamard_d256_group_value_from_h64(float x0, float x1, float x2, floa
 // One full warp owns one D256 row. Lane l carries dimensions l+32*r in values[r]. The fixed
 // normalized Sylvester transform is shared by persistent K preparation and transient Q
 // preparation; it never materializes an intermediate row outside registers.
-__device__ __forceinline__ void normalized_hadamard_d256_inplace(float (&values)[8], int lane) {
+// `Rows` independent rows at once: row i occupies values[8i .. 8i+7] in the single-row layout.
+// Every row gets exactly the single-row arithmetic; interleaving only exposes the rows'
+// independent shuffles to the scheduler.
+template <int Rows>
+__device__ __forceinline__ void normalized_hadamard_d256_rows_inplace(float (&values)[8 * Rows],
+                                                                      int lane) {
     hadamard_d32_columns_inplace(values, lane);
 
 #pragma unroll
-    for (int span = 1; span < 8; span <<= 1) {
+    for (int row = 0; row < Rows; ++row) {
 #pragma unroll
-        for (int base = 0; base < 8; base += 2 * span) {
+        for (int span = 1; span < 8; span <<= 1) {
 #pragma unroll
-            for (int offset = 0; offset < span; ++offset) {
-                const float low              = values[base + offset];
-                const float high             = values[base + offset + span];
-                values[base + offset]        = __fadd_rn(low, high);
-                values[base + offset + span] = __fsub_rn(low, high);
+            for (int base = 0; base < 8; base += 2 * span) {
+#pragma unroll
+                for (int offset = 0; offset < span; ++offset) {
+                    const int lo     = 8 * row + base + offset;
+                    const float low  = values[lo];
+                    const float high = values[lo + span];
+                    values[lo]        = __fadd_rn(low, high);
+                    values[lo + span] = __fsub_rn(low, high);
+                }
             }
         }
     }
 
 #pragma unroll
     for (float& value : values) { value = __fmul_rn(value, 0x1p-4f); }
+}
+
+__device__ __forceinline__ void normalized_hadamard_d256_inplace(float (&values)[8], int lane) {
+    normalized_hadamard_d256_rows_inplace<1>(values, lane);
 }
 
 } // namespace ninfer::ops

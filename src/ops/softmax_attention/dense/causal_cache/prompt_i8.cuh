@@ -1,10 +1,11 @@
 #pragma once
 
-// INT8-cache causal prompt kernel for the registered head geometries. Q and cached K use the same
-// fixed register-only D256 rotation before their private G64 encoders. QK stays INT8 through
-// m16n8k32.s8 Tensor Cores; V alone is dequantized with packed FP16 arithmetic while
-// producer warps execute QK. Sixteen warps split each 16-row FP16 PV output across
-// four 64-dimension slices.
+// Tiled causal prompt kernel for the rk8v4 and rk4v4 caches (packed INT4 values; rk4v4 also packs
+// Lloyd-Max keys) for the registered head geometries. The INT8-G64 cache runs the FA2-style kernel
+// in prompt_i8_fa2.cuh instead. Q and cached K use the same fixed register-only D256 rotation
+// before their private G64 encoders. QK stays INT8 through m16n8k32.s8 Tensor Cores; V alone is
+// dequantized with packed FP16 arithmetic while producer warps execute QK. Sixteen warps split
+// each 16-row FP16 PV output (FP32 accumulate) across four 64-dimension slices.
 
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
@@ -18,44 +19,17 @@
 // Swept on sm_86: the shipped 120 comes from an SM120 tuning note, and shared memory (93,184 B of
 // the 99 KiB budget) pins this kernel to one CTA per SM on either card, so registers cannot buy
 // occupancy here -- only fewer spills. 512 threads x 128 registers is exactly the 65,536 file.
-// Record of the INT8 PV experiment (2026-09-19). Its simulation and ablation switches were removed;
-// the conclusions stay because they decide whether the idea is worth reopening.
-//
-// Precision: P was rounded onto the int8 grid and back, leaving the FP16 storage and the FP16 mma
-// untouched. The softmax emits exp2(score - running_max), so P is already in [0, 1] with a maximum
-// of one and a fixed 1/127 needs no per-row scale. Measured on Qwen3.8-27B, 1M corpus, kv int8:
-//
-//   context   baseline    int8 P   change
-//     4,096   4.343155  4.332216   -0.25%
-//    32,768   4.138860  4.118939   -0.48%
-//
-// It does not cost quality, it improves it, and by more at long context -- dropping the tail of
-// near-zero weights sharpens the distribution, and there is more tail to drop at 32k than at 4k.
-// The caveat perplexity cannot cover: it is an average, and this changes a tail behaviour. Dropping
-// small distant weights is the thing a needle-in-a-haystack retrieval depends on, so a long-context
-// retrieval check belongs beside perplexity before an INT8 PV kernel ships.
-//
-// Throughput: VERDICT, **do not do it**. Timing-only ablations (skip the PV mma; also skip the V
-// dequant, the staging an INT8 PV would delete outright) at 25,600 context, 4096 tokens:
-//
-//   full kernel              51,621 us
-//     PV mma (fp16)          14,263 us  27.6%
-//     V dequant to fp16       2,891 us   5.6%
-//     QK + softmax + rest    34,467 us  66.8%
-//
-// The reasoning that motivated this was that PV carries ~80% of the *tensor-core* time, being on a
-// path four times slower than QK's with identical FLOPs. That is true and it is not the point: this
-// kernel is only about a third tensor-bound, so PV is 27.6% of the wall clock, not 80%. Even a
-// perfect 4x on the mma plus a free replacement for the dequant leaves attention at 1.36x, which is
-// +11.6% on a 51k prefill and +1.4% on a 4k one, since attention is 39% of the former and 5% of the
-// latter. That is not worth a rewrite of the most delicate kernel in the engine.
-//
-// What it *would* take is attacking the other 66.8% -- QK, the online softmax's transcendentals,
-// the KV staging and the epilogue -- which is a different and much larger piece of work.
-//
-// The precision question was settled first and separately, and favourably: int8 probabilities
-// improve perplexity. The idea died on throughput, not on quality, so if the kernel's structure
-// ever changes enough to make PV dominant, the precision half of the argument is already banked.
+// The 2026-09-19 INT8-PV ablation that used to be recorded here is superseded. Its timing split
+// (4096 tokens over 25.6K keys: PV MMA 27.6 %, V dequant 5.6 %, QK + softmax + staging 66.8 %)
+// showed this kernel only a third tensor-bound, and concluded that only restructuring the other
+// 66.8 % would pay. prompt_i8_fa2.cuh is that restructure for the INT8-G64 cache (register-resident
+// P, no V worker warps, double-buffered pages, FP16-accumulated PV, longest-first issue, key
+// splits); measured against this kernel on the RTX 3090 (2026-10-10, both geometries) it takes
+// 0.55-0.64x the time on 4096-token chunks and 0.13-0.45x on follow-ups of up to 256 tokens over
+// 32K-184K cached keys. The record's "int8 P improves perplexity" note is withdrawn: lower
+// perplexity from dropping each tile's small weights is not more exact, and Infernix's KL study
+// measured 2.2x the KL for 8-bit PV at long context. rk8v4 and rk4v4, and INT8-G64 over at most 256
+// visible keys, stay on this kernel.
 
 #ifndef NINFER_PROMPT_I8_MAXNREG
 #define NINFER_PROMPT_I8_MAXNREG 120
