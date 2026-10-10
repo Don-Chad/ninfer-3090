@@ -93,6 +93,13 @@ overrides for the `tuned` profile only, replacing the registered presets in thin
 `default` omits the flag so the registered preset stays in force. Loopback is the default host: `0.0.0.0` publishes an unauthenticated
 endpoint to every network the machine is on, so it is opt-in per run.
 
+The `tuned` profile also exposes further serving flags, each appended only when its variable is set so the
+defaults stay as measured: `NINFER_MAX_OUTPUT_TOKENS`, `NINFER_LOOKUP_NGRAM`, `NINFER_MLP_A8_DECODE=on`,
+`NINFER_CONTEXT_STORE` (+ `NINFER_CONTEXT_STORE_MAX_GIB`) and `NINFER_AUTO_HOST_CACHE=on` (+
+`NINFER_HOST_CACHE_PERCENT`, `_RESERVE_MIB`, `_MAX_MIB`). `--auto-host-cache` sizes the Host context budget
+itself and refuses `--host-context-mib`, so with it on the launcher drops that flag and
+`NINFER_HOST_CONTEXT_MIB` (and the step-down's halving of it) is ignored.
+
 **When the card is busy.** A desktop or another job holding VRAM can leave too little for the default
 context, and a machine short of RAM can fail to pin the Host context budget, so there are two ways
 to be refused: the engine's runtime reservation, or pinning host memory. The `tuned` profile

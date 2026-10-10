@@ -56,7 +56,22 @@ rem Jinja file, passed straight to --chat-template; overrides the artifact's bui
 rem `tuned` also: NINFER_CONTEXT,
 rem NINFER_CONCURRENCY, NINFER_KV_DTYPE, NINFER_SPEC, NINFER_DRAFT_TOKENS, NINFER_PREFILL_CHUNK,
 rem NINFER_VISION (on^|off), NINFER_VISION_RESIDENCY, NINFER_HOST_CONTEXT_MIB (8192), NINFER_MIN_P (0.03) and
-rem NINFER_PRESENCE_PENALTY (0.5), the loop guard ("default" keeps the registered preset). Each spec's defaults
+rem NINFER_PRESENCE_PENALTY (0.5), the loop guard ("default" keeps the registered preset).
+rem
+rem SERVING KNOBS, `tuned` only. Each is passed to ninfer-serve only when set, so leaving them all
+rem unset keeps the profile exactly as measured; `ninfer-serve --help` says what each one does.
+rem   NINFER_AUTO_HOST_CACHE=on           --auto-host-cache              size the Host context budget from free
+rem                                                                      RAM instead of NINFER_HOST_CONTEXT_MIB
+rem     NINFER_HOST_CACHE_PERCENT         --host-cache-percent N         share of free RAM to use (1-100)
+rem     NINFER_HOST_CACHE_RESERVE_MIB     --host-cache-reserve-mib N     RAM to always leave free
+rem     NINFER_HOST_CACHE_MAX_MIB         --host-cache-max-mib N         hard cap on pinned RAM
+rem   NINFER_MAX_OUTPUT_TOKENS            --max-output-tokens N          cap every request's output budget
+rem   NINFER_LOOKUP_NGRAM                 --lookup-ngram N               context-lookup drafting beside --spec
+rem   NINFER_MLP_A8_DECODE=on             --mlp-a8-decode                INT8-activation MLP decode
+rem   NINFER_CONTEXT_STORE                --context-store DIR            keep the context cache across restarts
+rem     NINFER_CONTEXT_STORE_MAX_GIB      --context-store-max-gib N      disk budget for the store
+rem
+rem Each spec's defaults
 rem (context, lanes, chunk) are the ones measured to fit beside a desktop, which holds roughly 1.5 GiB
 rem of the card; if startup refuses, drop a rung of NINFER_CONTEXT: 229376 / 196608 / 163840 / 131072 /
 rem 98304 / 65536.
@@ -324,7 +339,50 @@ if not "%NINFER_PRESENCE_PENALTY%"=="" set "PRESENCE=%NINFER_PRESENCE_PENALTY%"
 set "SAMPLING_ARGS="
 if /i not "%MIN_P%"=="default" set "SAMPLING_ARGS=--min-p %MIN_P%"
 if /i not "%PRESENCE%"=="default" set "SAMPLING_ARGS=%SAMPLING_ARGS% --presence-penalty %PRESENCE%"
-set "PROFILE_ARGS=%PROFILE_ARGS% --max-pending-requests 16 --pending-timeout-ms 600000 %VISION_ARGS% --host-context-mib %HOST_CONTEXT_MIB% %SAMPLING_ARGS%"
+rem --auto-host-cache sizes that budget from the RAM still free once the model has loaded, and
+rem refuses --host-context-mib, so it is either/or: with it on, NINFER_HOST_CONTEXT_MIB (and the
+rem step-down ladder's smaller budget) is ignored.
+set "AUTO_HOST_CACHE=off"
+if not "%NINFER_AUTO_HOST_CACHE%"=="" set "AUTO_HOST_CACHE=%NINFER_AUTO_HOST_CACHE%"
+set "CACHE_ARGS="
+if /i "%AUTO_HOST_CACHE%"=="on" goto :cache_auto
+if /i "%AUTO_HOST_CACHE%"=="off" goto :cache_fixed
+echo NINFER_AUTO_HOST_CACHE must be on or off, got %AUTO_HOST_CACHE% 1>&2
+exit /b 2
+:cache_auto
+set "CACHE_ARGS=--auto-host-cache"
+if not "%NINFER_HOST_CACHE_PERCENT%"=="" set "CACHE_ARGS=%CACHE_ARGS% --host-cache-percent %NINFER_HOST_CACHE_PERCENT%"
+if not "%NINFER_HOST_CACHE_RESERVE_MIB%"=="" set "CACHE_ARGS=%CACHE_ARGS% --host-cache-reserve-mib %NINFER_HOST_CACHE_RESERVE_MIB%"
+if not "%NINFER_HOST_CACHE_MAX_MIB%"=="" set "CACHE_ARGS=%CACHE_ARGS% --host-cache-max-mib %NINFER_HOST_CACHE_MAX_MIB%"
+set "CACHE_NOTE=Context cache: sized automatically from free host RAM  (NINFER_AUTO_HOST_CACHE)"
+goto :cache_done
+:cache_fixed
+if not "%NINFER_HOST_CACHE_PERCENT%%NINFER_HOST_CACHE_RESERVE_MIB%%NINFER_HOST_CACHE_MAX_MIB%"=="" (
+  echo NINFER_HOST_CACHE_* needs NINFER_AUTO_HOST_CACHE=on 1>&2
+  exit /b 2
+)
+set "CACHE_ARGS=--host-context-mib %HOST_CONTEXT_MIB%"
+set "CACHE_NOTE=Context cache: %HOST_CONTEXT_MIB% MiB pinned host RAM  (NINFER_HOST_CONTEXT_MIB)"
+:cache_done
+rem Opt-in serving knobs: each is appended only when set, so the defaults above are untouched.
+set "KNOB_ARGS="
+if not "%NINFER_MAX_OUTPUT_TOKENS%"=="" set "KNOB_ARGS=%KNOB_ARGS% --max-output-tokens %NINFER_MAX_OUTPUT_TOKENS%"
+if not "%NINFER_LOOKUP_NGRAM%"=="" set "KNOB_ARGS=%KNOB_ARGS% --lookup-ngram %NINFER_LOOKUP_NGRAM%"
+if /i "%NINFER_MLP_A8_DECODE%"=="on" set "KNOB_ARGS=%KNOB_ARGS% --mlp-a8-decode"
+if not "%NINFER_MLP_A8_DECODE%"=="" if /i not "%NINFER_MLP_A8_DECODE%"=="on" if /i not "%NINFER_MLP_A8_DECODE%"=="off" (
+  echo NINFER_MLP_A8_DECODE must be on or off, got %NINFER_MLP_A8_DECODE% 1>&2
+  exit /b 2
+)
+rem The store directory is an arbitrary path: the unquoted `set NAME=value` form puts the quotes
+rem around the expansion, as for CHAT_TEMPLATE_ARGS below, so metacharacters stay inert.
+set "STORE_ARGS="
+if not "%NINFER_CONTEXT_STORE%"=="" set STORE_ARGS=--context-store "%NINFER_CONTEXT_STORE%"
+if not "%NINFER_CONTEXT_STORE%"=="" if not "%NINFER_CONTEXT_STORE_MAX_GIB%"=="" set STORE_ARGS=%STORE_ARGS% --context-store-max-gib %NINFER_CONTEXT_STORE_MAX_GIB%
+if "%NINFER_CONTEXT_STORE%"=="" if not "%NINFER_CONTEXT_STORE_MAX_GIB%"=="" (
+  echo NINFER_CONTEXT_STORE_MAX_GIB needs NINFER_CONTEXT_STORE 1>&2
+  exit /b 2
+)
+set "PROFILE_ARGS=%PROFILE_ARGS% --max-pending-requests 16 --pending-timeout-ms 600000 %VISION_ARGS% %CACHE_ARGS%%KNOB_ARGS% %SAMPLING_ARGS%"
 
 :launch
 set "GRAFT_ARGS="
@@ -364,7 +422,7 @@ if not exist "%MODEL%" (
 
 echo %TITLE%  ^|  %LABEL%
 if not "%PREFILL_NOTE%"=="" echo %PREFILL_NOTE%
-if /i "%PROFILE%"=="tuned" echo Context cache: %HOST_CONTEXT_MIB% MiB pinned host RAM  (NINFER_HOST_CONTEXT_MIB)
+if /i "%PROFILE%"=="tuned" echo %CACHE_NOTE%
 if /i "%PROFILE%"=="tuned" echo Sampling guard: min-p %MIN_P%, presence penalty %PRESENCE%  (NINFER_MIN_P, NINFER_PRESENCE_PENALTY; "default" = registered preset)
 rem GRAFT_ARGS carries literal embedded quotes (--graft "godmode=<path>"), so re-quoting it for a
 rem string comparison here garbles the quoting and breaks the if statement. `defined` sidesteps
@@ -386,7 +444,7 @@ rem break the batch parse, quoting notwithstanding -- so this invocation runs un
 rem goto standing in for the ladder/non-ladder branch instead.
 if /i not "%PROFILE%"=="tuned" set "LADDER=0"
 if not "%LADDER%"=="0" goto :launch_ladder
-"%SERVER%" "%MODEL%" --host %HOST% --port %PORT% %PROFILE_ARGS% %GRAFT_ARGS% %CHAT_TEMPLATE_ARGS%
+"%SERVER%" "%MODEL%" --host %HOST% --port %PORT% %PROFILE_ARGS% %STORE_ARGS% %GRAFT_ARGS% %CHAT_TEMPLATE_ARGS%
 endlocal
 exit /b %ERRORLEVEL%
 
@@ -400,7 +458,7 @@ if "%RUNG%"=="0" (
   set "BASE_HOST_MIB=%HOST_CONTEXT_MIB%"
 )
 set "SERVER_LOG=%TEMP%\ninfer-run-%RANDOM%%RANDOM%.log"
-"%SERVER%" "%MODEL%" --host %HOST% --port %PORT% %PROFILE_ARGS% %GRAFT_ARGS% %CHAT_TEMPLATE_ARGS% 2>&1 | powershell -NoProfile -Command "$input | ForEach-Object { $_; Add-Content -LiteralPath '%SERVER_LOG%' -Value $_ -Encoding Ascii }"
+"%SERVER%" "%MODEL%" --host %HOST% --port %PORT% %PROFILE_ARGS% %STORE_ARGS% %GRAFT_ARGS% %CHAT_TEMPLATE_ARGS% 2>&1 | powershell -NoProfile -Command "$input | ForEach-Object { $_; Add-Content -LiteralPath '%SERVER_LOG%' -Value $_ -Encoding Ascii }"
 findstr /c:"runtime reservation requires" /c:"cudaMallocHost failed" "%SERVER_LOG%" >nul 2>&1
 if errorlevel 1 goto :server_done
 if %RUNG% GEQ 5 goto :server_done

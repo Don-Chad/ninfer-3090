@@ -528,17 +528,36 @@ private:
                 pending_writes.pop_front();
                 writer_active = true;
             }
+            ContextStoreWriteEvent event;
+            event.id           = image_id(image);
+            event.tokens       = image.tokens;
+            event.bytes        = image.bytes.size();
+            const auto started = std::chrono::steady_clock::now();
             try {
                 store_put(image);
-            } catch (...) {
+            } catch (const std::exception& error) {
+                event.error = error.what();
+            } catch (...) { event.error = "unknown context store write failure"; }
+            if (!event.error.empty()) {
                 // The continuation was counted as stored when it was queued; have it written again.
                 store_write_failures.fetch_add(1, std::memory_order_relaxed);
             }
+            event.seconds =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+            notify(event);
             {
                 std::scoped_lock lock(writer_mutex);
                 writer_active = false;
             }
         }
+    }
+
+    // Reports one background write to the configured listener; its exceptions are ignored.
+    void notify(const ContextStoreWriteEvent& event) const noexcept {
+        if (!options.context_store.listener) { return; }
+        try {
+            options.context_store.listener(event);
+        } catch (...) {}
     }
 
     // Lets the writer finish the queued images until `deadline`, then stops it.
