@@ -190,9 +190,11 @@ BuiltOpenAIResponse build_response(const std::string& id, std::int64_t created_a
         history.tool_calls.reserve(outcome.tool_calls.size());
         for (std::size_t index = 0; index < outcome.tool_calls.size(); ++index) {
             const ninfer::GeneratedToolCall& call = outcome.tool_calls[index];
-            history.tool_calls.push_back(ToolCall{.id             = ids.call_ids[index],
-                                                  .name           = call.name,
-                                                  .arguments_json = call.arguments_json});
+            history.tool_calls.push_back(
+                ToolCall{.id             = ids.call_ids[index],
+                         .name           = call.name,
+                         .arguments_json = call.arguments_json,
+                         .custom         = is_custom_tool(request, call.name)});
         }
         if (!outcome.text.empty()) {
             ContentPart part;

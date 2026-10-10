@@ -430,6 +430,7 @@ ToolCall parse_function_call_item(
         bad_request("function_call must contain a non-empty call_id", "input");
     }
     call.id                                        = item.at("call_id").get<std::string>();
+    call.custom                                    = true;
     const OpenAIResponsesFunctionIdentity identity = function_identity(item, "input");
     call.name = lower_function_identity(identity, identities, "input");
     if (!item.contains("arguments") || !item.at("arguments").is_string()) {
@@ -527,6 +528,7 @@ ChatTurn parse_function_call_output_item(
     ChatTurn turn;
     turn.role                = ChatRole::Tool;
     turn.tool_call_id        = item.at("call_id").get<std::string>();
+    turn.tool_result_custom  = custom;
     const bool has_name      = item.contains("name") && !item.at("name").is_null();
     const bool has_namespace = item.contains("namespace") && !item.at("namespace").is_null();
     if (has_namespace && !has_name) {

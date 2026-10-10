@@ -1054,6 +1054,25 @@ int test_custom_tools() {
                           child_resolved.generation.messages[2].tool_call_id == call_id,
                       "custom_tool_call_output continues a stored custom call");
 
+    // The wire kind of a result must match its call even when the result omits `name`.
+    const auto kind_mismatch = [&](const Json& input) {
+        return api_code([&] {
+            const OpenAIResponsesCreateRequest request = parse_openai_responses_create_request(
+                Json{{"model", "m"},
+                     {"previous_response_id", "resp_custom_parent"},
+                     {"tools", Json::array({apply_patch})},
+                     {"input", input}},
+                limits());
+            (void)resolve_openai_responses_prompt(request.prompt, store, "resp_kind_mismatch",
+                                                  true);
+        });
+    };
+    failures += check(
+        kind_mismatch(Json::array({Json{{"type", "function_call_output"},
+                                        {"call_id", call_id},
+                                        {"output", "Done!"}}})) == "invalid_tool_history",
+        "a function_call_output cannot answer a stored custom call");
+
     Json allowed           = body;
     allowed["tool_choice"] = Json{
         {"type", "allowed_tools"},
