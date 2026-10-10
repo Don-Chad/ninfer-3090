@@ -24,7 +24,12 @@ namespace ninfer::models::qwen3_5::frontend {
 //
 // Ported unchanged in behaviour from Infernix (Apache-2.0,
 // src/models/qwen3_5/frontend/ngram_sources.h).
-inline std::vector<std::string> ngram_numbered_sources(std::string_view text) {
+//
+// `for_each_ngram_numbered_source` hands each run to `visit(std::string&&)` as soon as it is
+// complete and stops scanning when `visit` returns false, so a caller with a token budget never
+// materializes more than one run beyond what it keeps. `ngram_numbered_sources` collects them all.
+template <typename Visitor>
+inline void for_each_ngram_numbered_source(std::string_view text, Visitor&& visit) {
     struct Line {
         std::uint64_t number;
         std::string_view body;
@@ -45,17 +50,17 @@ inline std::vector<std::string> ngram_numbered_sources(std::string_view text) {
         }
         return std::nullopt;
     };
-    std::vector<std::string> sources;
+    bool stopped = false;
     std::string run;
     std::uint64_t previous = 0;
     std::string_view style;
     std::size_t count = 0;
     const auto flush  = [&] {
-        if (count >= 3) { sources.push_back(std::move(run)); }
+        if (count >= 3 && !visit(std::move(run))) { stopped = true; }
         run.clear();
         count = 0;
     };
-    while (!text.empty()) {
+    while (!text.empty() && !stopped) {
         auto length        = text.find('\n');
         const bool newline = length != std::string_view::npos;
         if (!newline) { length = text.size(); }
@@ -75,7 +80,15 @@ inline std::vector<std::string> ngram_numbered_sources(std::string_view text) {
         }
         text.remove_prefix(length + (newline ? 1 : 0));
     }
-    flush();
+    if (!stopped) { flush(); }
+}
+
+inline std::vector<std::string> ngram_numbered_sources(std::string_view text) {
+    std::vector<std::string> sources;
+    for_each_ngram_numbered_source(text, [&](std::string&& source) {
+        sources.push_back(std::move(source));
+        return true;
+    });
     return sources;
 }
 
