@@ -129,21 +129,25 @@ int main() {
               "CLI help omits a production KV storage mode");
     const ninfer::cli::Options route_defaults =
         parse({"ninfer-cli", "model.ninfer", "--prompt", "hello"});
-    failures += check(!route_defaults.prefill_cublas && route_defaults.prefill_cublas_projections &&
-                          route_defaults.speculative.lookup_ngram == 0,
-                      "the cuBLAS prefill route or context lookup is on by default");
+    failures += check(!route_defaults.prefill_cublas && route_defaults.prefill_cublas_projections,
+                      "the cuBLAS prefill route is on by default");
     const ninfer::cli::Options route =
         parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--spec", "mtp", "--draft-tokens",
-               "3", "--lookup-ngram", "5", "--prefill-cublas", "--no-prefill-cublas-projections"});
+               "3", "--prefill-cublas", "--no-prefill-cublas-projections"});
     failures += check(route.prefill_cublas && !route.prefill_cublas_projections &&
-                          route.speculative.lookup_ngram == 5 &&
                           route.speculative.backend == ninfer::SpeculativeBackend::Mtp &&
                           route.speculative.draft_tokens == 3,
-                      "CLI did not parse the cuBLAS prefill and context-lookup controls");
-    for (const char* flag : {"--prefill-cublas", "--no-prefill-cublas-projections", "--lookup-ngram"}) {
+                      "CLI did not parse the cuBLAS prefill and drafting controls");
+    for (const char* flag : {"--prefill-cublas", "--no-prefill-cublas-projections"}) {
         failures += check(help.find(flag) != std::string::npos,
-                          "CLI help omits an accepted prefill or drafting control");
+                          "CLI help omits an accepted prefill control");
     }
+    // The MTP-only context lookup was removed with no alias; n-gram copy drafting replaces it.
+    failures += check(rejects([] {
+                          (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello",
+                                       "--lookup-ngram", "5"});
+                      }) && help.find("--lookup-ngram") == std::string::npos,
+                      "CLI still accepts or advertises the removed --lookup-ngram");
     const ninfer::cli::Options logging =
         parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--log-level", "debug"});
     failures += check(logging.log_level == ninfer::product::LogLevel::Debug,

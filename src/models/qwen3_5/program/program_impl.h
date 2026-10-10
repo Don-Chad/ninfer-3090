@@ -66,6 +66,10 @@ struct RequestBasePlanImpl {
     PrefixShortlistDigests prefix_digests;
     std::uint32_t prefix_identity_tag = 0;
     bool allow_prefix_reuse           = false;
+    // The prepared n-gram copy index, moved out of the prompt at planning and into the request's
+    // control by its one fresh binding; a resumed binding carries the control's own. Only the
+    // Engine worker touches it after planning.
+    mutable std::unique_ptr<NgramRequestIndex> ngram_index;
 
     [[nodiscard]] bool accepts_capture(std::uint32_t frontier) const noexcept;
     [[nodiscard]] CaptureGroup capture_group(std::uint32_t frontier) const;
@@ -203,6 +207,9 @@ struct RequestControl {
     std::vector<CaptureGroup> capture_groups;
     std::size_t next_capture = 0;
     bool capture_pending     = false;
+    // This request's n-gram copy index (null unless the Frontend builds them). It lives with the
+    // control, which a pause moves into the ResumeState together with the ledger it indexes.
+    std::unique_ptr<NgramRequestIndex> ngram;
 
     struct Prefill {
         PreparedPromptData prompt;
@@ -361,8 +368,6 @@ public:
     const ContextCacheOptions context_cache;
     const std::uint32_t prefill_chunk;
     const std::uint32_t draft_window;
-    // Context-lookup drafting n-gram (MTP only); zero disables it.
-    const std::uint32_t lookup_ngram;
     const SpeculativeBackend speculative_backend;
     const KvCacheStorage kv_storage;
     const ProposalHead proposal_head;

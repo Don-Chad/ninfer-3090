@@ -66,7 +66,6 @@ rem     NINFER_HOST_CACHE_PERCENT         --host-cache-percent N         share o
 rem     NINFER_HOST_CACHE_RESERVE_MIB     --host-cache-reserve-mib N     RAM to always leave free
 rem     NINFER_HOST_CACHE_MAX_MIB         --host-cache-max-mib N         hard cap on pinned RAM
 rem   NINFER_MAX_OUTPUT_TOKENS            --max-output-tokens N          cap every request's output budget
-rem   NINFER_LOOKUP_NGRAM                 --lookup-ngram N               context-lookup drafting beside --spec
 rem   NINFER_MLP_A8_DECODE=on             --mlp-a8-decode                INT8-activation MLP decode
 rem   NINFER_CONTEXT_STORE                --context-store DIR            keep the context cache across restarts
 rem     NINFER_CONTEXT_STORE_MAX_GIB      --context-store-max-gib N      disk budget for the store
@@ -367,7 +366,6 @@ set "CACHE_NOTE=Context cache: %HOST_CONTEXT_MIB% MiB pinned host RAM  (NINFER_H
 rem Opt-in serving knobs: each is appended only when set, so the defaults above are untouched.
 set "KNOB_ARGS="
 if not "%NINFER_MAX_OUTPUT_TOKENS%"=="" set "KNOB_ARGS=%KNOB_ARGS% --max-output-tokens %NINFER_MAX_OUTPUT_TOKENS%"
-if not "%NINFER_LOOKUP_NGRAM%"=="" set "KNOB_ARGS=%KNOB_ARGS% --lookup-ngram %NINFER_LOOKUP_NGRAM%"
 if /i "%NINFER_MLP_A8_DECODE%"=="on" set "KNOB_ARGS=%KNOB_ARGS% --mlp-a8-decode"
 if not "%NINFER_MLP_A8_DECODE%"=="" if /i not "%NINFER_MLP_A8_DECODE%"=="on" if /i not "%NINFER_MLP_A8_DECODE%"=="off" (
   echo NINFER_MLP_A8_DECODE must be on or off, got %NINFER_MLP_A8_DECODE% 1>&2

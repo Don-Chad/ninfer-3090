@@ -161,6 +161,9 @@ RequestBasePlan ProgramImpl::plan_request(PreparedPromptData&& prompt,
         }
         previous = frontier;
     }
+    // The index already holds the proposal-only sources; the shared prompt keeps neither.
+    base->ngram_index = std::move(prompt.ngram_index.index);
+    std::vector<std::vector<TokenId>>().swap(prompt.ngram_sources);
     base->prompt = std::make_shared<const PreparedPromptData>(std::move(prompt));
     if (base->summary.publish_continuation) {
         const auto& prepared = *base->prompt;

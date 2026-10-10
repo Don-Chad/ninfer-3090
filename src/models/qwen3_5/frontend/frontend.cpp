@@ -5,6 +5,7 @@
 
 #include "models/qwen3_5/frontend/chat_template.h"
 #include "models/qwen3_5/frontend/media_cache.h"
+#include "models/qwen3_5/frontend/ngram_sources.h"
 #include "models/qwen3_5/frontend/processor.h"
 #include "models/qwen3_5/frontend/test_access.h"
 #include "models/qwen3_5/frontend/tokenizer.h"
@@ -339,6 +340,16 @@ void assign_text_positions(PreparedPromptData& prompt) {
     prompt.rope_delta = 0;
 }
 
+// The request's n-gram copy index over its final prompt tokens and proposal-only sources, built on
+// the preparing thread so the Engine worker only moves it into the bound request.
+void build_ngram_index(PreparedPromptData& prompt, std::uint32_t max_context,
+                       const std::vector<TokenId>& boundaries) {
+    auto index = std::make_unique<detail::NgramRequestIndex>(
+        detail::ngram_index_capacity(max_context), boundaries);
+    index->index_prompt(prompt.token_ids, prompt.external_prefix_tokens, prompt.ngram_sources);
+    prompt.ngram_index.index = std::move(index);
+}
+
 // Returns the number of context positions a graft occupies.
 std::uint32_t graft_context_slots(const PromptGraft& graft) {
     if (graft.kind == GraftKind::PrefillKV) {
@@ -643,6 +654,12 @@ public:
             throw std::invalid_argument(
                 "Frontend requires the parsed model tokenizer and public token domain");
         }
+        ngram_index = options.ngram_index;
+        if (ngram_index) {
+            for (int id = 0; id < static_cast<int>(tokenizer->vocab_size()); ++id) {
+                if (tokenizer->is_special_token(id)) { ngram_boundaries.push_back(id); }
+            }
+        }
         sampling            = default_sampling(options.architecture);
         grammar_cache_bytes = options.grammar_cache_bytes;
         for (const int token : tokenizer->default_stop_token_ids()) {
@@ -714,6 +731,9 @@ public:
     std::uint32_t max_context       = 0;
     std::size_t grammar_cache_bytes = 0;
     std::vector<PromptGraft> grafts;
+    bool ngram_index = false;
+    // Special tokens: n-gram copy spans end at them.
+    std::vector<TokenId> ngram_boundaries;
     mutable std::once_flag grammar_once;
     mutable std::unique_ptr<text::GrammarCompiler> grammar_compiler;
 
@@ -851,6 +871,27 @@ PreparedPrompt Frontend::prepare(PromptInput input, const PreparationControl& co
     auto prepared              = std::make_unique<PreparedPromptData>();
     PreparedPromptData& result = *prepared;
     result.tool_call_output    = tool_call_output;
+    if (impl_->ngram_index) {
+        // Only tool results feed proposal sources, and only their de-numbered runs; together
+        // they are bounded by the context capacity.
+        std::size_t remaining = impl_->max_context;
+        for (const auto& message : messages) {
+            if (remaining == 0) { break; }
+            if (message.role != ChatRole::Tool) { continue; }
+            for (const auto& part : message.parts) {
+                if (remaining == 0) { break; }
+                if (part.kind != fi::ChatPartKind::Text) { continue; }
+                fi::check_preparation_control(control, "n-gram proposal sources");
+                for (const auto& source : fi::ngram_numbered_sources(part.text)) {
+                    if (remaining == 0) { break; }
+                    auto tokens = impl_->tokenizer->encode(source, {.max_tokens = remaining});
+                    fi::check_preparation_control(control, "n-gram proposal sources");
+                    remaining -= tokens.size();
+                    result.ngram_sources.push_back(std::move(tokens));
+                }
+            }
+        }
+    }
     std::vector<std::optional<std::uint32_t>> message_boundaries;
     std::vector<std::optional<std::uint32_t>> cache_boundaries;
     if (has_media) {
@@ -924,6 +965,10 @@ PreparedPrompt Frontend::prepare(PromptInput input, const PreparationControl& co
         std::move(cache_hints), message_count, message_boundaries, rendered_markers,
         cache_boundaries, result.vision_items, engine_tool_marker_index, leading_boundary,
         graft && graft->kind == GraftKind::PrefillKV ? graft_context_slots(*graft) : 0U);
+    if (impl_->ngram_index) {
+        fi::check_preparation_control(control, "n-gram index");
+        build_ngram_index(result, impl_->max_context, impl_->ngram_boundaries);
+    }
     result.prepare.seconds = std::chrono::duration<double>(Clock::now() - start).count();
     return PreparedPrompt(std::move(prepared));
 }
@@ -998,6 +1043,9 @@ PreparedPrompt Frontend::prepare_tokens(std::vector<TokenId> token_ids,
     assign_text_positions(result);
     result.identity.reusable                  = allow_prefix_identity;
     result.context_cache.update_session_index = false;
+    if (impl_->ngram_index) {
+        build_ngram_index(result, impl_->max_context, impl_->ngram_boundaries);
+    }
     result.prepare.seconds = std::chrono::duration<double>(Clock::now() - start).count();
     return PreparedPrompt(std::move(prepared));
 }

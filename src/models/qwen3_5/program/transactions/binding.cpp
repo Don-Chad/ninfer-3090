@@ -410,6 +410,7 @@ void ProgramImpl::install_binding(ContextTransaction& tx) {
         state.tail_hidden_valid       = tx.source_tail_hidden;
         request.lifecycle             = Lifecycle::Prefilling;
         request.publish_continuation  = tx.base->summary.publish_continuation;
+        request.ngram                 = std::move(tx.base->ngram_index);
         install_sampling(state, request, tx.base->sampling);
     }
     refresh_state_views(state);

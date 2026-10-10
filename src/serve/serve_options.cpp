@@ -152,7 +152,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--lm-head-draft] [--lm-head-q4|--lm-head-q6] [--embedding-q4|--embedding-q6] [--mtp-experts-q4] "
            "[--gdn-state-fp16] "
            "[--mlp-a8-decode] [--no-prefill-a8] "
-           "[--prefill-cublas [--no-prefill-cublas-projections]] [--lookup-ngram N] "
+           "[--prefill-cublas [--no-prefill-cublas-projections]] "
            "[--no-thinking] [--preserve-thinking] [--graft NAME=PATH]... [--default-graft NAME] "
            "[--reasoning-effort minimal|low|medium|high|xhigh|max] [--cors] "
            "[--temperature F] [--top-p F] [--top-k N] [--min-p F] [--presence-penalty F] "
@@ -184,9 +184,6 @@ std::string serve_usage_text(const char* argv0) {
            "small perplexity cost (docs/performance.md), off by default, and it wants a larger "
            "--prefill-chunk to pay; --no-prefill-cublas-projections keeps the attention and GDN "
            "input projections off that route\n"
-           "       --lookup-ngram N adds context-lookup drafting alongside --spec: the last N tokens "
-           "are matched against the sequence so far and what followed is proposed; it is exact, and "
-           "0 (the default) disables it\n"
            "       --no-prefix-reuse disables cross-request history; request pause/replay "
            "resources remain available\n"
            "       --context-store DIR keeps retained sessions on disk so a restart or crash does "
@@ -547,9 +544,6 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.mlp_a8_decode = true;
         } else if (arg == "--no-prefill-a8") {
             options.prefill_a8 = false;
-        } else if (arg == "--lookup-ngram") {
-            options.speculative.lookup_ngram = static_cast<std::uint32_t>(
-                parse_nonnegative_int(require_value("--lookup-ngram"), "lookup-ngram"));
         } else if (arg == "--prefill-cublas") {
             options.prefill_cublas = true;
         } else if (arg == "--no-prefill-cublas-projections") {

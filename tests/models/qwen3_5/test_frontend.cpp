@@ -2967,6 +2967,67 @@ int test_media_preparation_cancellation() {
     return check(false, "cancelled media preparation completed successfully");
 }
 
+// N-gram proposal sources come only from tool results, de-numbered, and never change the target
+// prompt or its identity; the prepared index proposes from them.
+int test_ngram_sources_from_tool_results() {
+    const auto text_message = [](ninfer::ChatRole role, std::string text) {
+        ninfer::ChatMessage message;
+        message.role = role;
+        message.parts.push_back(ninfer::MessagePart{
+            .kind = ninfer::MessagePartKind::Text, .text = std::move(text), .media = {}});
+        return message;
+    };
+    const std::string numbered_user = "1: alpha\n2: beta\n3: gamma\n";
+    const std::string numbered_tool =
+        "    10\xe2\x86\x92" "def f():\n    11\xe2\x86\x92    x = 1\n    12\xe2\x86\x92    return x\n";
+    const auto input = [&] {
+        ninfer::PromptInput result;
+        result.messages.push_back(text_message(ninfer::ChatRole::User, numbered_user));
+        result.messages.push_back(text_message(ninfer::ChatRole::Assistant, "reading"));
+        result.messages.push_back(text_message(ninfer::ChatRole::Tool, numbered_tool));
+        return result;
+    };
+    ninfer::models::qwen3_5::FrontendOptions options;
+    options.vision_enabled = false;
+    options.max_context    = 4'096;
+    const Frontend plain   = make_frontend(resources(), options);
+    options.ngram_index    = true;
+    const Frontend indexed = make_frontend(resources(), options);
+
+    const auto plain_prompt   = plain.prepare(input());
+    const auto indexed_prompt = indexed.prepare(input());
+    const auto& without       = FrontendFactory::inspect(plain_prompt);
+    const auto& with          = FrontendFactory::inspect(indexed_prompt);
+    int failures = check(without.ngram_sources.empty() && !without.ngram_index.index,
+                         "a Frontend without n-gram indexes built sources or an index");
+    failures += check(with.ngram_sources ==
+                          std::vector<std::vector<ninfer::TokenId>>{
+                              indexed.tokenize_text("def f():\n    x = 1\n    return x\n")},
+                      "n-gram sources are not exactly the de-numbered tool result");
+    failures += check(with.token_ids == without.token_ids && with.positions == without.positions &&
+                          with.context_cache.opportunities == without.context_cache.opportunities &&
+                          with.identity.rewrite_execution_frontiers ==
+                              without.identity.rewrite_execution_frontiers,
+                      "n-gram sources changed the target prompt or its identity");
+    if (!with.ngram_index.index) { return failures + check(false, "no prepared n-gram index"); }
+    failures += check(with.ngram_index.index->indexed() == with.token_ids.size(),
+                      "the prepared index does not cover exactly the prompt ledger");
+    // Writing the de-numbered code continues from the proposal-only source; the numbered prompt
+    // text never holds these lines contiguously.
+    std::vector<ninfer::TokenId> ledger = with.token_ids;
+    const auto written                  = indexed.tokenize_text("def f():\n    x = 1\n");
+    ledger.insert(ledger.end(), written.begin(), written.end());
+    const auto proposal = with.ngram_index.index->propose_for_round(ledger, 15, 7, 12);
+    failures += check(proposal.tokens == indexed.tokenize_text("    return "),
+                      "the prepared index did not propose from the de-numbered tool source");
+    // Token-only preparation indexes its tokens and has no tool sources.
+    const auto tokens = indexed.prepare_tokens(without.token_ids);
+    failures += check(FrontendFactory::inspect(tokens).ngram_sources.empty() &&
+                          FrontendFactory::inspect(tokens).ngram_index.index,
+                      "token-only preparation did not build its n-gram index");
+    return failures;
+}
+
 } // namespace
 
 int main() {
@@ -2985,6 +3046,7 @@ int main() {
     failures += test_assistant_continuation();
     failures += test_rewrite_checkpoint_trace();
     failures += test_adjacent_tool_message_boundary();
+    failures += test_ngram_sources_from_tool_results();
     failures += test_literal_cache_boundary();
     failures += test_selected_template_recovery_boundary();
     failures += test_official_resource_guards();

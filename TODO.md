@@ -85,12 +85,12 @@ the idea is obvious and the obstacle is not.
   one acceptance threshold. The curve is flat in the middle, so two points take most of the spread
   for one extra graph and one bit of per-sequence state.
 
-**2. Context-lookup drafting on the DFlash2 path -- smaller than it first looked.**
-`--lookup-ngram` is implemented and hooks the MTP branch only, where it is worth ~3-5% because that
-drafter already accepts 95-96%. The case for moving it to DFlash2 was K=15's 0.868 acceptance and a
-2.3x ceiling -- but K=15 is not the operating point on real generation, and at K=7 acceptance is
-0.95, which caps a perfect drafter at **+19%**. Worth doing, worth maybe half that in practice, and
-no longer the largest thing on this list.
+**2. Copy drafting on the DFlash2 path -- in progress.**
+The MTP-only `--lookup-ngram` is removed: it verified at the head's own width, so it could never
+widen a round, and measured equal to off. Its replacement is n-gram copy drafting (indexed
+proposer and tool-result de-numbering ported from Infernix), which pays only by verifying a copy
+*wider* than the neural window -- at K=7 acceptance is 0.95, which caps a perfect same-width drafter
+at **+19%**, so the width is the prize, not the source of the drafts.
 
 ## Open after the 2026-09-17 upstream catch-up (v3 artifacts, `src/models/qwen3_5`)
 

@@ -151,7 +151,7 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
     : parameters(parameters_in), device(device_in), capacity(plan.capacity),
       kv_capacity(plan.kv_capacity), max_concurrency(plan.max_concurrency),
       context_cache(plan.context_cache), prefill_chunk(plan.prefill_chunk),
-      draft_window(plan.draft_window), lookup_ngram(plan.lookup_ngram),
+      draft_window(plan.draft_window),
       speculative_backend(plan.speculative_backend),
       kv_storage(plan.kv_storage), proposal_head(plan.proposal_head),
       vision_enabled(plan.features.vision), use_cuda_graph(plan.use_cuda_graph),

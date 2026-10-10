@@ -1,5 +1,4 @@
 #include "models/qwen3_5/program/program_impl.h"
-#include "models/qwen3_5/program/speculative/lookup_draft.h"
 #include "models/qwen3_5/program/context_work.h"
 #include "models/qwen3_5/program/execution_context.h"
 #include "models/qwen3_5/execution/linear.h"
@@ -473,17 +472,6 @@ runtime::ExecutionTiming ProgramImpl::resolve_pending_raw(
                     for (std::uint32_t step = 0; step < sequence.mtp_draft_count; ++step) {
                         sequence.mtp_drafts[step] =
                             mtp_host_egress->next_drafts[step * max_concurrency + row];
-                    }
-                    // Context lookup, preferred over the draft head's guess whenever the n-gram has
-                    // been seen before. The two are complements: the head is weakest on output that
-                    // repeats the input, which is exactly where a lookup is certain. The proposal is
-                    // one-hot either way, so verify treats them identically and a wrong guess costs
-                    // throughput rather than correctness.
-                    if (lookup_ngram != 0) {
-                        const std::uint32_t found = ::ninfer::qwen3_5::lookup_draft(
-                            std::span<const TokenId>(sequence.ledger), lookup_ngram, draft_window,
-                            sequence.mtp_drafts.data());
-                        if (found != 0) { sequence.mtp_draft_count = found; }
                     }
                 }
             } else {

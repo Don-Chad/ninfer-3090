@@ -94,7 +94,7 @@ overrides for the `tuned` profile only, replacing the registered presets in thin
 endpoint to every network the machine is on, so it is opt-in per run.
 
 The `tuned` profile also exposes further serving flags, each appended only when its variable is set so the
-defaults stay as measured: `NINFER_MAX_OUTPUT_TOKENS`, `NINFER_LOOKUP_NGRAM`, `NINFER_MLP_A8_DECODE=on`,
+defaults stay as measured: `NINFER_MAX_OUTPUT_TOKENS`, `NINFER_MLP_A8_DECODE=on`,
 `NINFER_CONTEXT_STORE` (+ `NINFER_CONTEXT_STORE_MAX_GIB`) and `NINFER_AUTO_HOST_CACHE=on` (+
 `NINFER_HOST_CACHE_PERCENT`, `_RESERVE_MIB`, `_MAX_MIB`). `--auto-host-cache` sizes the Host context budget
 itself and refuses `--host-context-mib`, so with it on the launcher drops that flag and
