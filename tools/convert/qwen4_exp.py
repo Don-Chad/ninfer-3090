@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import math
 from pathlib import Path
 from typing import Mapping
 
@@ -59,16 +60,29 @@ def _ints(metadata: Mapping, key: str, length: int | None = None) -> list[int]:
     return list(value)
 
 
-def _real(metadata: Mapping, key: str) -> float:
-    value = metadata.get(key)
-    if type(value) not in (int, float) or not value > 0:
-        raise GgufError(f"{key}: expected a positive number")
+def _finite(metadata: Mapping, key: str, default: float | None = None) -> float:
+    """A finite float metadata value (NaN and +-inf are never valid, and JSON cannot hold them)."""
+    value = metadata.get(key, default)
+    if type(value) not in (int, float) or not math.isfinite(value):
+        raise GgufError(f"{key}: expected a finite number, got {value!r}")
     return float(value)
 
 
-def _f32_text(value: float) -> float:
+def _real(metadata: Mapping, key: str) -> float:
+    value = _finite(metadata, key)
+    if not value > 0:
+        raise GgufError(f"{key}: expected a positive number, got {value!r}")
+    return value
+
+
+def _f32_text(metadata: Mapping, key: str, default: float) -> float:
     """The shortest decimal that rounds to the same FP32 (GGUF stores sampling values as F32)."""
-    return float(str(np.float32(value)))
+    value = _finite(metadata, key, default)
+    with np.errstate(over="ignore"):
+        single = np.float32(value)
+    if not math.isfinite(single):
+        raise GgufError(f"{key}: {value!r} overflows FP32")
+    return float(str(single))
 
 
 def text_config(metadata: Mapping) -> dict:
@@ -106,6 +120,8 @@ def text_config(metadata: Mapping) -> dict:
     offsets = _ints(m, _KEY + "ple.head_offsets")
     sizes = _ints(m, _KEY + "ple.head_vocab_sizes", len(offsets))
     ngram = _int(m, _KEY + "ple.ngram_size")
+    if ngram < 2:
+        raise GgufError(f"{_KEY}ple.ngram_size: expected at least 2, got {ngram}")
     heads_per_ngram = _int(m, _KEY + "ple.heads_per_ngram")
     if len(offsets) != (ngram - 1) * heads_per_ngram:
         raise GgufError("PLE head tables do not match ngram_size and heads_per_ngram")
@@ -420,6 +436,17 @@ def _check_shapes(gguf: GgufModel, config: dict) -> None:
             checks[p + "attn_q_norm.weight"] = (d,)
             checks[p + "attn_k_norm.weight"] = (d,)
             checks[p + "attn_output.weight"] = (h, heads * d)
+            # The indexer reads the same mixer input as attention. Its query has one
+            # indexer_head_dim vector per indexer head and its key a single such vector.
+            idx_heads, idx_dim = config["indexer_num_heads"], config["indexer_head_dim"]
+            checks[p + "indexer.q_proj.weight"] = (idx_heads * idx_dim, h)
+            checks[p + "indexer.k_proj.weight"] = (idx_dim, h)
+            checks[p + "indexer.q_norm.weight"] = (idx_dim,)
+            checks[p + "indexer.k_norm.weight"] = (idx_dim,)
+    # Not checked, because nothing in the config or the repository pins their dimensions:
+    # ple_key/ple_value/ple_norm_*/ple_conv1d. Their input width (2 * ple_embedding_dim in the
+    # fixture) is ngram_size - 1 or heads_per_ngram times it, and the hyper-connection width
+    # they share is only evidenced by that fixture.
     for name, shape in checks.items():
         if gguf.tensor(name).shape != tuple(shape):
             raise GgufError(f"{name}: shape {gguf.tensor(name).shape}, expected {shape}")
@@ -543,9 +570,9 @@ def tokenizer_resources(metadata: Mapping, config: dict) -> dict[str, bytes]:
         "do_sample": True,
         "eos_token_id": list(dict.fromkeys(eos)),
         "pad_token_id": metadata["tokenizer.ggml.padding_token_id"],
-        "temperature": _f32_text(metadata.get("general.sampling.temp", 1.0)),
+        "temperature": _f32_text(metadata, "general.sampling.temp", 1.0),
         "top_k": metadata.get("general.sampling.top_k", 20),
-        "top_p": _f32_text(metadata.get("general.sampling.top_p", 1.0)),
+        "top_p": _f32_text(metadata, "general.sampling.top_p", 1.0),
     }
     template = metadata.get("tokenizer.chat_template")
     if not isinstance(template, str) or not template:
