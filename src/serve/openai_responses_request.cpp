@@ -430,7 +430,6 @@ ToolCall parse_function_call_item(
         bad_request("function_call must contain a non-empty call_id", "input");
     }
     call.id                                        = item.at("call_id").get<std::string>();
-    call.custom                                    = true;
     const OpenAIResponsesFunctionIdentity identity = function_identity(item, "input");
     call.name = lower_function_identity(identity, identities, "input");
     if (!item.contains("arguments") || !item.at("arguments").is_string()) {
@@ -473,6 +472,7 @@ ToolCall parse_custom_tool_call_item(
     }
     ToolCall call;
     call.id                                        = item.at("call_id").get<std::string>();
+    call.custom                                    = true;
     const OpenAIResponsesFunctionIdentity identity = custom_identity(item, "input");
     call.name = lower_function_identity(identity, identities, "input");
     if (!item.contains("input") || !item.at("input").is_string()) {
