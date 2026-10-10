@@ -4,9 +4,11 @@
 // monotonic token counters, for load balancers and gateways that schedule across servers.
 
 #include "ninfer/types.h"
+#include "serve/generation_pace.h"
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 
 namespace ninfer::serve {
@@ -33,6 +35,8 @@ struct LoadSample {
     // max_pending_requests.
     std::size_t admitted_requests = 0;
     ninfer::RuntimeStats stats;
+    // Pace of the last finished request with two or more tokens; empty before the first one.
+    std::optional<GenerationPace> last_generation;
 };
 
 [[nodiscard]] LoadCapacity make_load_capacity(std::string model_id,

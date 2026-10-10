@@ -94,6 +94,12 @@ int main() {
                           dflash_vision.speculative.backend == ninfer::SpeculativeBackend::DFlash &&
                           dflash_vision.speculative.draft_tokens == 7,
                       "CLI did not preserve the combined DFlash and Vision startup features");
+    for (const char* backend : {"mtp", "dflash", "dflash2"}) {
+        const auto implied = parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--spec",
+                                    backend, "--draft-tokens", "3"});
+        failures += check(implied.speculative.proposal_head == ninfer::ProposalHead::Optimized,
+                          "CLI --spec did not imply the optimized proposal head");
+    }
     for (const auto k : {1U, 2U, 7U, 15U}) {
         const auto dflash2 = parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--spec",
                                     "dflash2", "--draft-tokens", std::to_string(k)});

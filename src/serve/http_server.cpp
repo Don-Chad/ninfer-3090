@@ -544,6 +544,7 @@ void HttpServer::handle_load(const httplib::Request&, httplib::Response& res) co
         std::chrono::duration<double>(std::chrono::steady_clock::now() - attached_at_).count();
     sample.admitted_requests = service_->admitted_requests();
     sample.stats             = service_->runtime_stats();
+    sample.last_generation   = metrics_.last_generation_pace();
     res.set_header("Cache-Control", "no-store");
     res.set_content(make_load_report(load_capacity_, sample), "application/json");
 }

@@ -126,6 +126,21 @@ void Metrics::done(const GenerationOutcome& outcome) {
     }
     requests_.duration.observe(outcome.metrics.total_seconds);
     requests_.queue.observe(outcome.metrics.engine_timing.queue_wait_seconds);
+    const GenerationPace pace{
+        .completion_tokens       = static_cast<std::uint32_t>(std::max(outcome.completion_tokens, 0)),
+        .generation_wall_seconds = outcome.metrics.generation_wall_seconds,
+        .decode_host_seconds     = outcome.metrics.engine_timing.decode_host_exposed_seconds};
+    // A one-token answer has no interval and leaves the last pace as it was.
+    if (pace.token_intervals() > 0) {
+        requests_.token_intervals += pace.token_intervals();
+        requests_.token_interval_seconds += pace.generation_wall_seconds;
+        requests_.last_pace = pace;
+    }
+}
+
+std::optional<GenerationPace> Metrics::last_generation_pace() const {
+    std::lock_guard lock(mutex_);
+    return requests_.last_pace;
 }
 
 void Metrics::rejected() {
@@ -378,6 +393,25 @@ std::string Metrics::render(const RuntimeStats& stats, bool ready,
     counter("device_wait_seconds_total", stats.host_work.device_wait_ns * 1e-9,
             baseline_.host_work.device_wait_ns * 1e-9,
             "Engine wall time waiting for device work, not kernel time.");
+    // The sum of the host_work phases as one series: its rate against token throughput exposes a
+    // host-bound Engine (the "healthy but slow" state of #208 keeps /health at 200).
+    counter("engine_host_seconds_total", stats.host_work.active_ns() * 1e-9,
+            baseline_.host_work.active_ns() * 1e-9,
+            "Engine host-active seconds, device wait excluded.");
+    counter("token_intervals_total", requests.token_intervals, 0U,
+            "Gaps between consecutive output tokens of finished requests. The rate of "
+            "ninfer_token_interval_seconds_total over this one is the mean inter-token time.");
+    counter("token_interval_seconds_total", requests.token_interval_seconds, 0.0,
+            "Wall seconds from first to last output token of finished requests.");
+    if (requests.last_pace) {
+        gauge("last_request_inter_token_seconds", requests.last_pace->inter_token_seconds(),
+              "Mean seconds between output tokens of the last finished request that produced at "
+              "least two. A healthy Engine stays in milliseconds; a fixed stall after the first "
+              "token pushes a short answer into seconds.");
+        gauge("last_request_decode_host_seconds", requests.last_pace->decode_host_seconds,
+              "Decode-round host time exposed to the last finished request, device wait "
+              "excluded.");
+    }
     header("requests_total", "counter",
            "Generation attempts entering preparation, by terminal outcome.");
     for (const auto& [outcome, count] : std::array{

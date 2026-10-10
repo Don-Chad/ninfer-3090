@@ -111,6 +111,8 @@ std::string tool_choice_name(const ToolChoice& choice) {
         return "auto";
     case ToolChoiceMode::None:
         return "none";
+    case ToolChoiceMode::Required:
+        return "required";
     }
     return "unknown";
 }
@@ -483,11 +485,6 @@ ninfer::RuntimeHostWorkStats host_work_delta(const ninfer::RuntimeHostWorkStats&
     };
 }
 
-std::uint64_t host_active_ns(const ninfer::RuntimeHostWorkStats& timing) noexcept {
-    return timing.engine_boundary_ns + timing.program_submit_ns + timing.program_post_ns +
-           timing.engine_commit_output_ns + timing.engine_maintenance_ns;
-}
-
 Json microseconds_per(std::uint64_t nanoseconds, std::uint64_t count) {
     if (count == 0) { return nullptr; }
     return nanoseconds_to_microseconds(nanoseconds) / static_cast<double>(count);
@@ -691,7 +688,7 @@ std::string format_throughput(const ThroughputReport& report) {
             << static_cast<double>(report.decode_row_rounds) /
                    static_cast<double>(report.decode_rounds);
     }
-    out << " host=" << std::setprecision(2) << nanoseconds_to_seconds(host_active_ns(host)) * 1000.0
+    out << " host=" << std::setprecision(2) << nanoseconds_to_seconds(host.active_ns()) * 1000.0
         << "ms";
     if (report.decode_rounds == 0) {
         out << " decode-host=n/a wait=n/a";
@@ -973,7 +970,7 @@ std::string format_throughput_json(const std::string& server_instance_id, std::u
     }
     const ninfer::RuntimeHostWorkStats host =
         host_work_delta(previous.host_work, current.host_work);
-    const std::uint64_t active_host = host_active_ns(host);
+    const std::uint64_t active_host = host.active_ns();
     record["interval_seconds"]      = report.interval_seconds;
     record["final_interval"]        = report.final_interval;
     record["tokens"]                = Json{{"computed_prefill", report.computed_prefill_tokens},

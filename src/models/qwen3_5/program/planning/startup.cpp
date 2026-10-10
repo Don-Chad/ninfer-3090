@@ -862,6 +862,13 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
                                     " pipeline stages but " + std::to_string(device.size()) +
                                     " devices are attached");
     }
+    for (std::size_t rank = 1; rank < device.size(); ++rank) {
+        // Workspace and launch capacities are derived from one SM count, taken from rank 0.
+        if (device.rank(rank).multiprocessor_count() != device.rank(0).multiprocessor_count()) {
+            throw std::invalid_argument(
+                "pipeline stages must run on devices with the same streaming-multiprocessor count");
+        }
+    }
     const std::uint32_t logical_pages = page_count(options.max_context);
     const std::uint32_t minimum_pages = std::max(logical_pages, options.max_concurrency);
     const std::uint64_t maximum_pages64 =

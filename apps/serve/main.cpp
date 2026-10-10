@@ -115,6 +115,9 @@ int main(int argc, char** argv) {
 
         ninfer::serve::GenerationService service(
             options, startup_log.observer(),
+            [&operational_log](const ninfer::ContextStoreWriteEvent& e) {
+                operational_log.context_store_write(e);
+            },
             [operational_log, logger, exit_on_failure = options.exit_on_engine_failure](
                 const ninfer::EngineFaultEvent& event) {
                 handle_engine_fault(operational_log, logger, exit_on_failure, event);

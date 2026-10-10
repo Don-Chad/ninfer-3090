@@ -885,6 +885,22 @@ DeviceKVPagePool::copy_host_pages(std::span<const DeviceKVPageHandle> pages,
     return work;
 }
 
+bool DeviceKVPagePool::host_layout_is_canonical(const HostKVPageLayout& host) const noexcept {
+    if (host.geometry != geometry() || host.page_stride != host_page_stride_ ||
+        host.planes.size() != host_transfer_planes_.size()) {
+        return false;
+    }
+    for (std::size_t index = 0; index < host_transfer_planes_.size(); ++index) {
+        const HostKVPlaneLayout& plane   = host.planes[index];
+        const HostTransferPlane& planned = host_transfer_planes_[index];
+        if (plane.offset != planned.host_offset || plane.page_payload_bytes != planned.page_bytes ||
+            plane.head_payload_bytes != planned.head_bytes) {
+            return false;
+        }
+    }
+    return true;
+}
+
 TransferWork DeviceKVPagePool::copy_to_host(std::span<const DeviceKVPageHandle> source,
                                             HostKVAllocationView destination,
                                             RankStreams streams) const {
@@ -898,10 +914,7 @@ TransferWork DeviceKVPagePool::copy_to_host(std::span<const DeviceKVPageHandle> 
 TransferWork DeviceKVPagePool::copy_to_host(std::span<const DeviceKVPageHandle> source,
                                             std::byte* destination, const HostKVPageLayout& host,
                                             RankStreams streams) const {
-    // The transfer plan was built from plan_host_kv_page_layout(geometry()); any layout of this
-    // geometry is that one, which the stride check confirms.
-    if (destination == nullptr || host.geometry != geometry() ||
-        host.page_stride != host_page_stride_) {
+    if (destination == nullptr || !host_layout_is_canonical(host)) {
         throw std::invalid_argument("Paged KV D2H geometry or extent is inconsistent");
     }
     for (DeviceKVPageHandle page : source) { (void)physical_index(page); }
@@ -922,8 +935,7 @@ TransferWork DeviceKVPagePool::copy_from_host(const std::byte* source,
                                               const HostKVPageLayout& host,
                                               std::span<const DeviceKVPageHandle> destination,
                                               RankStreams streams) const {
-    if (source == nullptr || host.geometry != geometry() ||
-        host.page_stride != host_page_stride_) {
+    if (source == nullptr || !host_layout_is_canonical(host)) {
         throw std::invalid_argument("Paged KV H2D geometry or extent is inconsistent");
     }
     validate_distinct_pages(destination, "Paged KV H2D destination contains duplicate pages");

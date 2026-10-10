@@ -145,6 +145,16 @@ struct StartupObserver {
     std::function<void(const StartupEvent& event)> callback;
 };
 
+// One session written to the context store, reported from the writer thread.
+struct ContextStoreWriteEvent {
+    std::string id;
+    std::uint32_t tokens = 0;
+    std::uint64_t bytes  = 0;
+    double seconds       = 0.0;
+    // Empty on success.
+    std::string error;
+};
+
 // A durable store for retained sessions, so the context cache survives a restart or a crash.
 // Disabled unless a directory is given; requires the context cache and a nonzero Host context
 // budget. A retained session is written there when it has been idle for `idle_persist` and (all of
@@ -175,6 +185,8 @@ struct ContextStoreOptions {
     std::string remote_prefix;
     // How long shutdown waits for the uploads still queued.
     std::chrono::seconds remote_flush_budget{120};
+    // Called on the writer thread after each session is written. Exceptions are ignored.
+    std::function<void(const ContextStoreWriteEvent& event)> listener;
 
     [[nodiscard]] bool enabled() const noexcept { return !directory.empty(); }
 };
@@ -1180,6 +1192,12 @@ struct RuntimeHostWorkStats {
 
     std::uint64_t stats_publication_ns          = 0;
     std::uint64_t stats_publication_invocations = 0;
+
+    // Host-active time: every engine and program phase, device wait excluded.
+    [[nodiscard]] std::uint64_t active_ns() const noexcept {
+        return engine_boundary_ns + program_submit_ns + program_post_ns + engine_commit_output_ns +
+               engine_maintenance_ns;
+    }
 };
 
 // Monotonic execution counters, boundary-consistent current gauges, and explicitly named last
