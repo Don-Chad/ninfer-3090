@@ -17,9 +17,15 @@ import torch
 
 from tools.artifact.formats import (
     DirectFormat,
+    GgmlBlockFormat,
     QuantFormat,
     get_format,
     valid_positive_fp32_word,
+)
+from tools.artifact.layouts import (
+    GGML_ROWS_PAGE4K_V1,
+    ggml_blocks_geometry,
+    ggml_row_page_geometry,
 )
 from tools.artifact.schema import TensorSpec
 from tools.artifact.tensor_output import TensorOutput
@@ -287,12 +293,16 @@ def fp8_row_maxabs(request: PrepareRequest) -> PreparedMethod:
     return request.job(produce=produce)
 
 
+GGML_CHUNK_BYTES = 16 * 1024 * 1024
+
+
 def import_encoded(request: PrepareRequest) -> PreparedMethod:
-    """Preserve the current FP8/NVFP4 source codes, scales and weight divisor."""
+    """Preserve the source's encoded words: FP8/NVFP4 codes, scales and weight divisor, or
+    complete GGML blocks. The source rows must already be in the target format."""
+    ggml = isinstance(get_format(request.target.format), GgmlBlockFormat)
     if (
-        request.target.format not in ("nvfp4", "fp8_e4m3fn_row_bf16")
-        or len(request.target.shape) != 2
-    ):
+        not ggml and request.target.format not in ("nvfp4", "fp8_e4m3fn_row_bf16")
+    ) or len(request.target.shape) != 2:
         raise ValueError("import_encoded requires a known encoded matrix target")
     _preflight(request, values=False)
     auxiliaries = {}
@@ -326,11 +336,20 @@ def import_encoded(request: PrepareRequest) -> PreparedMethod:
                         source.input_divisor()
                     )
     n = request.target.shape[0]
-    chunk = (
-        max(128, request.rows_per_chunk // 128 * 128)
-        if request.target.format == "nvfp4"
-        else request.rows_per_chunk
-    )
+    if ggml:
+        # Byte-sized reads, independent of the quantizers' rows_per_chunk; a paged layout
+        # writes whole pages, so its chunks hold whole pages of rows.
+        row_bytes = ggml_blocks_geometry(request.target.format, request.target.shape).row_bytes
+        chunk = max(1, GGML_CHUNK_BYTES // row_bytes)
+        if request.target.layout == GGML_ROWS_PAGE4K_V1.name:
+            per_page = ggml_row_page_geometry(
+                request.target.format, request.target.shape
+            ).rows_per_page
+            chunk = max(per_page, chunk // per_page * per_page)
+    elif request.target.format == "nvfp4":
+        chunk = max(128, request.rows_per_chunk // 128 * 128)
+    else:
+        chunk = request.rows_per_chunk
 
     def produce(output):
         for begin in range(0, n, chunk):

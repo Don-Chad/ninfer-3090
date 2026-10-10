@@ -101,7 +101,7 @@ A simple split at the middle of the source matrix would change the model.
 The Dense groupwise attention recipe packs Q/K into Q4 and gate/V into Q5. A supported FP8 or NVFP4
 recipe can pack their union into one parent. The same four logical roles then become either the
 two-weight or one-weight native fused call. Dense gate/up and MoE expert banks follow their finite
-packing and execution rules. [Storage layouts](storage-layouts.md#8-logical-views-and-native-operands)
+packing and execution rules. [Storage layouts](storage-layouts.md#10-logical-views-and-native-operands)
 describes the difference between logical views and native operand restrictions.
 
 `tie_word_embeddings` records a training relationship; bindings choose whether physical data is

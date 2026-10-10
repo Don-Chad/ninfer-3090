@@ -1,7 +1,8 @@
 """Offline checkpoint-to-artifact conversion.
 
 sources reads and interprets checkpoint values. qwen3_5 maps those values and
-configuration to model's logical parameters; resources supplies frontend bytes.
+configuration to model's logical parameters, and qwen4_exp does so for the qwen4exp
+GGUF; resources supplies frontend bytes.
 recipe selects sources, representations, grouping, and methods. official_recipes
 supplies the maintained assignments; proposal adds the indexed proposal head.
 methods adapts numerical quantization or encoded import to artifact.tensor_output.
