@@ -1,0 +1,101 @@
+/* Ultimate LLM Router — design tokens.
+   Typography scale, spacing and colour values are modelled on the Strata UI (serve/web/tokens.css,
+   itself derived from the Gainsty design system) so the two local tools feel like one family.
+   Light is the default; dark via <html data-theme="dark">. */
+
+@font-face{font-family:"Outfit";src:url("fonts/outfit-latin-wght.woff2") format("woff2-variations");font-weight:100 900;font-display:swap;unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:"Outfit";src:url("fonts/outfit-latin-ext-wght.woff2") format("woff2-variations");font-weight:100 900;font-display:swap;unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF}
+
+:root{
+  /* type */
+  --ui-font:"Outfit",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --ui-mono:ui-monospace,"Cascadia Code","SF Mono",Consolas,"Liberation Mono",monospace;
+  --ui-fs-xs:12px; --ui-fs-sm:13px; --ui-fs-md:14px; --ui-fs-base:15px;
+  --ui-fs-lg:18px; --ui-fs-xl:24px; --ui-fs-stat:30px; --ui-fs-display:38px;
+  --ui-fw-regular:400; --ui-fw-medium:500; --ui-fw-semibold:600; --ui-fw-bold:700;
+
+  /* spacing (4pt) */
+  --ui-s1:4px; --ui-s2:8px; --ui-s3:12px; --ui-s4:16px; --ui-s5:20px;
+  --ui-s6:24px; --ui-s8:32px; --ui-s10:40px; --ui-s12:48px; --ui-s16:64px;
+
+  /* radius */
+  --ui-r-sm:8px; --ui-r-md:12px; --ui-r-lg:16px; --ui-r-xl:22px; --ui-r-pill:9999px;
+
+  /* motion */
+  --ui-ease:cubic-bezier(.2,.7,.2,1); --ui-dur:160ms;
+
+  /* colour — light */
+  --ui-bg:#f6f8fa;
+  --ui-surface:#ffffff;
+  --ui-surface-2:#f2f4f7;
+  --ui-surface-3:#e9edf2;
+  --ui-line:#dde4ec;
+  --ui-line-soft:#eceff3;
+  --ui-ink:#1d232b;
+  --ui-ink-soft:#39424e;
+  --ui-ink-muted:#65707d;
+  --ui-icon:#3b4653;
+
+  --ui-accent:#0e9f6e;
+  --ui-accent-hover:#0b7f58;
+  --ui-accent-ink:#ffffff;
+  --ui-accent-tint:#e8f8f1;
+  --ui-accent-text:#0a7a55;
+  --ui-focus:#4056e6;
+
+  --ui-info:#0f86e8;   --ui-info-tint:#e7f3fe;  --ui-info-text:#0a63b0;
+  --ui-warn:#c88405;   --ui-warn-tint:#fff5e2;  --ui-warn-text:#8a5a00;
+  --ui-danger:#d81f3c; --ui-danger-tint:#fdeaed; --ui-danger-text:#a8142c;
+
+  --ui-chart-1:#0e9f6e;  /* gpu util  */
+  --ui-chart-2:#0f86e8;  /* vram      */
+  --ui-chart-3:#e0632f;  /* temp      */
+  --ui-chart-4:#8b5cf6;  /* power     */
+  --ui-chart-5:#0891b2;  /* cpu       */
+  --ui-chart-6:#d4a106;  /* ram       */
+
+  --ui-code-bg:#14181d; --ui-code-ink:#e6e9ec;
+
+  --ui-sh-card:0 1px 2px rgba(15,23,42,.04),0 1px 3px rgba(15,23,42,.03);
+  --ui-sh-pop:0 12px 40px rgba(15,23,42,.12),0 1px 3px rgba(15,23,42,.06);
+  --ui-sh-bar:0 1px 0 rgba(15,23,42,.04);
+  color-scheme:light;
+}
+
+[data-theme="dark"]{
+  --ui-bg:#0d1013;
+  --ui-surface:#15191d;
+  --ui-surface-2:#1b2025;
+  --ui-surface-3:#232930;
+  --ui-line:#282f36;
+  --ui-line-soft:#20262c;
+  --ui-ink:#e9edf1;
+  --ui-ink-soft:#c3cad2;
+  --ui-ink-muted:#8b949e;
+  --ui-icon:#b9c2cc;
+
+  --ui-accent:#31d0a0;
+  --ui-accent-hover:#4ade9f;
+  --ui-accent-ink:#04241a;
+  --ui-accent-tint:rgba(49,208,160,.12);
+  --ui-accent-text:#4ee0b0;
+  --ui-focus:#7b93ff;
+
+  --ui-info:#3aa9ff;   --ui-info-tint:rgba(58,169,255,.12);  --ui-info-text:#7cc4ff;
+  --ui-warn:#f0b429;   --ui-warn-tint:rgba(240,180,41,.13);  --ui-warn-text:#f6c964;
+  --ui-danger:#ff5a6e; --ui-danger-tint:rgba(255,90,110,.13);--ui-danger-text:#ff8a98;
+
+  --ui-chart-1:#31d0a0;
+  --ui-chart-2:#4aa8ff;
+  --ui-chart-3:#ff8a5c;
+  --ui-chart-4:#a78bfa;
+  --ui-chart-5:#38bdf8;
+  --ui-chart-6:#f0b429;
+
+  --ui-code-bg:#0a0c0e; --ui-code-ink:#e6e9ec;
+
+  --ui-sh-card:0 1px 2px rgba(0,0,0,.4);
+  --ui-sh-pop:0 16px 48px rgba(0,0,0,.55),0 1px 3px rgba(0,0,0,.4);
+  --ui-sh-bar:0 1px 0 rgba(0,0,0,.2);
+  color-scheme:dark;
+}

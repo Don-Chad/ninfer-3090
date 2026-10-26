@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NInfer Studio</title>
+<meta name="description" content="Local ninfer engine: streaming chat, live telemetry, engine control.">
+<link rel="stylesheet" href="/tokens.css?v=3">
+<link rel="stylesheet" href="/app.css?v=3">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2331d0a0' stroke-width='1.8' stroke-linecap='round'><rect x='7' y='7' width='10' height='10' rx='2'/><path d='M10 3v3M14 3v3M10 18v3M14 18v3M3 10h3M3 14h3M18 10h3M18 14h3'/></svg>">
+</head>
+<body>
+<a class="skip" href="#main" data-i18n="a11y.skip">Skip to content</a>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"><svg class="ico"><use href="/icons.svg#i-chip"></use></svg></span>
+    <span class="brand-text">
+      <strong>NInfer Studio</strong>
+      <small id="brandSub" data-i18n="brand.sub">local inference · RTX 3090</small>
+    </span>
+  </div>
+
+  <nav class="tabs" role="tablist" aria-label="Sections">
+    <button role="tab" id="tab-chat" aria-controls="view-chat" aria-selected="true" data-view="chat" data-i18n="tab.chat">Chat</button>
+    <button role="tab" id="tab-live" aria-controls="view-live" aria-selected="false" data-view="live" data-i18n="tab.live">Live</button>
+    <button role="tab" id="tab-engine" aria-controls="view-engine" aria-selected="false" data-view="engine" data-i18n="tab.engine">Engine</button>
+    <button role="tab" id="tab-model" aria-controls="view-model" aria-selected="false" data-view="model" data-i18n="tab.model">Model</button>
+  </nav>
+
+  <div class="topbar-right">
+    <span class="status-pill" id="statusPill" data-state="unknown" role="status" aria-live="polite">
+      <span class="dot" aria-hidden="true"></span><span id="statusPillText" data-i18n="status.connecting">Connecting…</span>
+    </span>
+    <button class="icon-btn" id="pillAction" type="button" data-i18n-title="rail.suspend" title="Free VRAM (suspend model)">
+      <svg class="ico"><use href="/icons.svg#i-pause"></use></svg>
+    </button>
+    <button class="lang-btn" id="langBtn" type="button" title="Language / Γλώσσα" aria-label="Language">
+      <span id="langLabel">EN</span>
+    </button>
+    <button class="icon-btn" id="themeBtn" type="button" aria-label="Toggle theme" data-i18n-title="a11y.theme" title="Toggle theme">
+      <svg class="ico only-light"><use href="/icons.svg#i-moon"></use></svg>
+      <svg class="ico only-dark"><use href="/icons.svg#i-sun"></use></svg>
+    </button>
+  </div>
+</header>
+
+<div class="conn-banner" id="connBanner" role="alert" hidden>
+  <svg class="ico" aria-hidden="true"><use href="/icons.svg#i-alert"></use></svg>
+  <span id="connBannerText"></span>
+  <button class="btn btn-sm" id="connRetry" type="button" data-i18n="common.retry">Retry</button>
+</div>
+
+<main id="main">
+
+<!-- ───────────────────────────────────────────────────────── Chat -->
+<section class="view" id="view-chat" role="tabpanel" aria-labelledby="tab-chat">
+  <div class="view-head">
+    <div>
+      <h1 data-i18n="chat.title">Chat</h1>
+      <p class="sub"><span data-i18n="chat.sub">Streaming from the local engine</span> — <span class="mono" id="chatModel">—</span></p>
+    </div>
+    <div class="head-actions">
+      <button class="btn" id="btnClear" type="button"><svg class="ico"><use href="/icons.svg#i-refresh"></use></svg><span data-i18n="chat.new">New chat</span></button>
+      <button class="btn btn-primary" id="btnFocus" type="button"><svg class="ico"><use href="/icons.svg#i-send"></use></svg><span data-i18n="chat.write">Write</span></button>
+    </div>
+  </div>
+
+  <div class="chat-layout">
+    <article class="card panel chat-panel">
+      <div class="panel-bar">
+        <div class="bar-left">
+          <span class="tag good" id="chatState"><svg class="ico"><use href="/icons.svg#i-check"></use></svg><span data-i18n="chat.ready">ready</span></span>
+          <span class="small muted" id="chatTurns">0</span>
+        </div>
+        <div class="bar-right">
+          <label class="ctl"><span data-i18n="chat.thinking">thinking</span>
+            <select id="optThink">
+              <option value="none" selected data-i18n="chat.off">off</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+            </select>
+          </label>
+          <label class="ctl"><span data-i18n="chat.maxTokens">max tokens</span>
+            <input id="optMax" type="number" min="16" max="8192" step="16" value="1024">
+          </label>
+          <label class="ctl"><span data-i18n="chat.temp">temp</span>
+            <input id="optTemp" type="number" min="0" max="2" step="0.1" value="0.7">
+          </label>
+        </div>
+      </div>
+
+      <div class="chat-log" id="log">
+        <div class="empty" id="empty">
+          <svg class="ico"><use href="/icons.svg#i-hub"></use></svg>
+          <strong data-i18n="chat.emptyTitle">Ready for your first question</strong>
+          <span data-i18n="chat.emptyBody">Text or image (drag &amp; drop). History stays in this browser tab only.</span>
+        </div>
+      </div>
+
+      <div class="attach-row" id="attachRow" hidden></div>
+
+      <form class="composer" id="form">
+        <button class="icon-btn" id="btnImage" type="button" data-i18n-title="chat.attach" title="Attach image">
+          <svg class="ico"><use href="/icons.svg#i-file"></use></svg>
+        </button>
+        <textarea id="input" rows="1" data-i18n-placeholder="chat.placeholder" placeholder="Ask something… (Enter = send, Shift+Enter = new line)"></textarea>
+        <button class="btn btn-primary" id="btnSend" type="submit">
+          <svg class="ico"><use href="/icons.svg#i-send"></use></svg><span data-i18n="chat.send">Send</span>
+        </button>
+        <input type="file" id="file" accept="image/*" multiple hidden>
+      </form>
+    </article>
+
+    <aside class="rail">
+      <article class="card metric" data-key="tokens_per_s">
+        <header><svg class="ico"><use href="/icons.svg#i-gauge"></use></svg><span data-i18n="m.decode">decode</span></header>
+        <div class="metric-value"><b id="mTps">—</b><span class="unit">tok/s</span></div>
+        <svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true"><path class="spark-line" id="sparkPath" d=""/></svg>
+        <footer class="metric-foot" id="mTpsFoot" data-i18n="rail.waiting">waiting for a sample</footer>
+      </article>
+
+      <article class="card panel">
+        <div class="panel-bar"><h2 data-i18n="rail.now">Now</h2><span class="tag" id="liveBadge">2s</span></div>
+        <dl class="facts">
+          <div class="fact"><dt data-i18n="rail.tokRound">tok / round</dt><dd id="mTpr">—</dd></div>
+          <div class="fact"><dt data-i18n="m.prefill">prefill</dt><dd id="mPrefill">—</dd></div>
+          <div class="fact"><dt data-i18n="rail.generated">generated</dt><dd id="mGen">—</dd></div>
+          <div class="fact"><dt data-i18n="rail.kvPages">KV pages</dt><dd id="mKv">—</dd></div>
+        </dl>
+      </article>
+
+      <article class="card panel">
+        <div class="panel-bar"><h2 data-i18n="tab.engine">Engine</h2><span class="tag" id="railSpec">—</span></div>
+        <dl class="facts">
+          <div class="fact"><dt data-i18n="rail.model">model</dt><dd id="railModel" class="mono">—</dd></div>
+          <div class="fact"><dt data-i18n="rail.context">context</dt><dd id="railCtx">—</dd></div>
+          <div class="fact"><dt data-i18n="rail.vram">VRAM</dt><dd id="railVram">—</dd></div>
+          <div class="fact"><dt data-i18n="rail.state">state</dt><dd id="railState">—</dd></div>
+        </dl>
+        <div class="panel-foot">
+          <button class="btn btn-sm" id="railSuspend" type="button"><svg class="ico"><use href="/icons.svg#i-pause"></use></svg><span data-i18n="rail.suspend">Suspend</span></button>
+          <button class="btn btn-sm" id="railResume" type="button"><svg class="ico"><use href="/icons.svg#i-play"></use></svg><span data-i18n="rail.resume">Resume</span></button>
+        </div>
+      </article>
+    </aside>
+  </div>
+</section>
+
+<!-- ───────────────────────────────────────────────────────── Live -->
+<section class="view" id="view-live" role="tabpanel" aria-labelledby="tab-live" hidden>
+  <div class="view-head">
+    <div>
+      <h1 data-i18n="live.title">Live</h1>
+      <p class="sub"><span data-i18n="live.sub">Telemetry from</span> <span class="mono">/metrics</span> &amp; <span class="mono">/v1/load</span>, <span data-i18n="live.sub2">sample every</span> <span id="sampleInterval">2</span>s.</p>
+    </div>
+    <div class="head-actions">
+      <button class="btn" id="liveRefresh" type="button"><svg class="ico"><use href="/icons.svg#i-refresh"></use></svg><span data-i18n="live.refresh">Refresh</span></button>
+    </div>
+  </div>
+
+  <div class="engine-strip card">
+    <div class="es-state">
+      <span class="state-badge" id="esBadge" data-state="idle"><span class="dot"></span><span id="esState">Idle</span></span>
+      <div class="es-meta">
+        <div class="es-engine" id="esEngine">—</div>
+        <div class="es-model mono" id="esModel">—</div>
+      </div>
+    </div>
+    <dl class="es-facts">
+      <div><dt data-i18n="live.spec">spec</dt><dd id="esSpec">—</dd></div>
+      <div><dt data-i18n="rail.context">context</dt><dd id="esContext">—</dd></div>
+      <div><dt>KV</dt><dd id="esKv">—</dd></div>
+      <div><dt data-i18n="live.uptime">uptime</dt><dd id="esUptime">—</dd></div>
+    </dl>
+  </div>
+
+  <div class="metric-grid">
+    <article class="metric card" data-key="tokens_per_s">
+      <header><svg class="ico"><use href="/icons.svg#i-gauge"></use></svg><span data-i18n="m.decodeTitle">Decode</span></header>
+      <div class="metric-value"><b data-val id="mgTps">—</b><span class="unit">tok/s</span></div>
+      <svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true"><path class="spark-line" data-spark="tps" d=""/></svg>
+      <footer class="metric-foot" data-foot id="mgTpsFoot"></footer>
+    </article>
+
+    <article class="metric card" data-key="tokens_per_round">
+      <header><svg class="ico"><use href="/icons.svg#i-tokens"></use></svg><span data-i18n="m.tprTitle">Tok / round</span></header>
+      <div class="metric-value"><b data-val id="mgTpr">—</b><span class="unit">tok</span></div>
+      <svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true"><path class="spark-line" data-spark="tpr" d=""/></svg>
+      <footer class="metric-foot" data-foot id="mgTprFoot" data-i18n="m.tprFoot">speculative verification</footer>
+    </article>
+
+    <article class="metric card" data-key="prefill">
+      <header><svg class="ico"><use href="/icons.svg#i-bolt"></use></svg><span data-i18n="m.prefill">Prefill</span></header>
+      <div class="metric-value"><b data-val id="mgPre">—</b><span class="unit">tok/s</span></div>
+      <svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true"><path class="spark-line" data-spark="pre" d=""/></svg>
+      <footer class="metric-foot" data-foot id="mgPreFoot"></footer>
+    </article>
+
+    <article class="metric card" data-key="vram_used">
+      <header><svg class="ico"><use href="/icons.svg#i-memory"></use></svg><span>VRAM</span></header>
+      <div class="metric-value"><b data-val id="mgVram">—</b><span class="unit" id="mgVramUnit">GiB</span></div>
+      <div class="meter" aria-hidden="true"><i id="mgVramBar"></i></div>
+      <svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true"><path class="spark-line" data-spark="vram" d=""/></svg>
+      <footer class="metric-foot" data-foot id="mgVramFoot"></footer>
+    </article>
+
+    <article class="metric card" data-key="gpu_temp">
+      <header><svg class="ico"><use href="/icons.svg#i-thermo"></use></svg><span data-i18n="m.tempTitle">GPU temperature</span></header>
+      <div class="metric-value"><b data-val id="mgTemp">—</b><span class="unit">°C</span></div>
+      <svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true"><path class="spark-line" data-spark="temp" d=""/></svg>
+      <footer class="metric-foot" data-foot id="mgTempFoot"></footer>
+    </article>
+
+    <article class="metric card" data-key="gpu_power">
+      <header><svg class="ico"><use href="/icons.svg#i-bolt"></use></svg><span data-i18n="m.powerTitle">Power</span></header>
+      <div class="metric-value"><b data-val id="mgPower">—</b><span class="unit">W</span></div>
+      <svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true"><path class="spark-line" data-spark="power" d=""/></svg>
+      <footer class="metric-foot" data-foot id="mgPowerFoot"></footer>
+    </article>
+
+    <article class="metric card" data-key="gpu_util">
+      <header><svg class="ico"><use href="/icons.svg#i-cpu"></use></svg><span data-i18n="m.utilTitle">GPU util</span></header>
+      <div class="metric-value"><b data-val id="mgUtil">—</b><span class="unit">%</span></div>
+      <svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true"><path class="spark-line" data-spark="util" d=""/></svg>
+      <footer class="metric-foot" data-foot id="mgUtilFoot"></footer>
+    </article>
+
+    <article class="metric card" data-key="kv_pages">
+      <header><svg class="ico"><use href="/icons.svg#i-disk"></use></svg><span data-i18n="m.kvTitle">KV cache</span></header>
+      <div class="metric-value"><b data-val id="mgKv">—</b><span class="unit">pages</span></div>
+      <div class="meter" aria-hidden="true"><i id="mgKvBar"></i></div>
+      <svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true"><path class="spark-line" data-spark="kv" d=""/></svg>
+      <footer class="metric-foot" data-foot id="mgKvFoot"></footer>
+    </article>
+  </div>
+
+  <div class="two-col">
+    <article class="card panel">
+      <div class="panel-bar"><h2 data-i18n="ctx.title">Context space</h2><span class="small muted" data-i18n="ctx.hint">host pinned</span></div>
+      <div class="panel-body">
+        <div class="meter tall" aria-hidden="true"><i id="ctxBar"></i></div>
+        <dl class="facts two">
+          <div class="fact"><dt data-i18n="ctx.used">in use</dt><dd id="ctxUsed">—</dd></div>
+          <div class="fact"><dt data-i18n="ctx.total">total</dt><dd id="ctxTotal">—</dd></div>
+          <div class="fact"><dt data-i18n="ctx.peak">peak</dt><dd id="ctxPeak">—</dd></div>
+          <div class="fact"><dt data-i18n="ctx.kvTokens">KV tokens</dt><dd id="ctxKvTok">—</dd></div>
+        </dl>
+      </div>
+    </article>
+
+    <article class="card panel">
+      <div class="panel-bar"><h2 data-i18n="q.title">Queues</h2><span class="small muted">/v1/load</span></div>
+      <div class="panel-body">
+        <dl class="facts two">
+          <div class="fact"><dt>running</dt><dd id="qRunning">—</dd></div>
+          <div class="fact"><dt>waiting</dt><dd id="qWaiting">—</dd></div>
+          <div class="fact"><dt>prefilling</dt><dd id="qPrefill">—</dd></div>
+          <div class="fact"><dt>decode ready</dt><dd id="qReady">—</dd></div>
+          <div class="fact"><dt>host active</dt><dd id="qHost">—</dd></div>
+          <div class="fact"><dt>device wait</dt><dd id="qDev">—</dd></div>
+        </dl>
+      </div>
+    </article>
+  </div>
+
+  <p class="small muted" id="metricsNote" hidden></p>
+
+  <article class="card panel">
+    <div class="panel-bar"><h2 data-i18n="therm.title">Temperatures &amp; fans</h2><span class="small muted" id="thermSrc">NVML</span></div>
+    <div class="panel-body">
+      <dl class="facts two" id="thermList"></dl>
+      <p class="small muted" id="thermLimits"></p>
+    </div>
+  </article>
+</section>
+
+<!-- ─────────────────────────────────────────────────────── Engine -->
+<section class="view" id="view-engine" role="tabpanel" aria-labelledby="tab-engine" hidden>
+  <div class="view-head">
+    <div>
+      <h1 data-i18n="eng.title">Engine</h1>
+      <p class="sub" data-i18n="eng.sub">Control plus facts the server reports about itself — no estimates.</p>
+    </div>
+    <div class="head-actions">
+      <button class="btn btn-primary" id="engStart" type="button"><svg class="ico"><use href="/icons.svg#i-play"></use></svg><span data-i18n="eng.start">Start</span></button>
+      <button class="btn" id="engSuspend" type="button"><svg class="ico"><use href="/icons.svg#i-pause"></use></svg><span data-i18n="rail.suspend">Suspend</span></button>
+      <button class="btn" id="engResume" type="button"><svg class="ico"><use href="/icons.svg#i-play"></use></svg><span data-i18n="eng.resume">Resume</span></button>
+      <button class="btn btn-danger" id="engStop" type="button"><svg class="ico"><use href="/icons.svg#i-stop"></use></svg><span data-i18n="eng.stop">Stop</span></button>
+    </div>
+  </div>
+
+  <div class="hint-row">
+    <span class="tag" id="engPill">—</span>
+    <span class="small muted" data-i18n="eng.hint">Suspend hands the device memory back to the GPU and returns in ~4 s. Stop kills the process.</span>
+  </div>
+
+  <div class="two-col">
+    <article class="card panel">
+      <div class="panel-bar"><h2 data-i18n="eng.process">Process</h2><span class="small muted mono" id="eUp">—</span></div>
+      <dl class="facts">
+        <div class="fact"><dt data-i18n="eng.modelId">model id</dt><dd class="mono" id="eId">—</dd></div>
+        <div class="fact"><dt data-i18n="eng.weights">weights path</dt><dd class="mono tiny" id="ePath">—</dd></div>
+        <div class="fact"><dt data-i18n="rail.context">context</dt><dd id="eCtx">—</dd></div>
+        <div class="fact"><dt data-i18n="eng.spec">speculation</dt><dd id="eSpec">—</dd></div>
+        <div class="fact"><dt data-i18n="rail.kvPages">KV pages</dt><dd id="eKv">—</dd></div>
+        <div class="fact"><dt data-i18n="eng.decoded">decode tokens</dt><dd id="eDecoded">—</dd></div>
+        <div class="fact"><dt data-i18n="eng.sleeping">sleeping</dt><dd id="eSleep">—</dd></div>
+        <div class="fact"><dt data-i18n="eng.pid">pid</dt><dd class="mono" id="ePid">—</dd></div>
+      </dl>
+    </article>
+
+    <div class="col">
+      <article class="card panel">
+        <div class="panel-bar"><h2 data-i18n="eng.caps">Capabilities</h2><span class="small muted">/v1/models</span></div>
+        <dl class="facts">
+          <div class="fact"><dt>input</dt><dd id="cIn">—</dd></div>
+          <div class="fact"><dt>output</dt><dd id="cOut">—</dd></div>
+          <div class="fact"><dt data-i18n="eng.maxCtx">max context</dt><dd id="cCtx">—</dd></div>
+        </dl>
+      </article>
+
+      <article class="card panel">
+        <div class="panel-bar"><h2 data-i18n="eng.build">Build</h2><span class="small muted">/props</span></div>
+        <dl class="facts">
+          <div class="fact"><dt data-i18n="eng.version">version</dt><dd class="mono" id="bVer">—</dd></div>
+          <div class="fact"><dt data-i18n="tab.engine">engine</dt><dd class="mono" id="bBuild">—</dd></div>
+        </dl>
+      </article>
+    </div>
+  </div>
+
+  <article class="card panel">
+    <div class="panel-bar"><h2 data-i18n="cfg.title">Configuration</h2><span class="small muted" data-i18n="cfg.hint">studio.config.json / environment</span></div>
+    <dl class="facts two">
+      <div class="fact"><dt data-i18n="cfg.engine">engine</dt><dd class="mono" id="cfgEngine">—</dd></div>
+      <div class="fact"><dt data-i18n="cfg.ui">web UI</dt><dd class="mono" id="cfgUi">—</dd></div>
+      <div class="fact"><dt data-i18n="cfg.cmd">start command</dt><dd class="mono" id="cfgCmd">—</dd></div>
+      <div class="fact"><dt data-i18n="cfg.file">config file</dt><dd class="mono" id="cfgFile">—</dd></div>
+    </dl>
+  </article>
+
+  <article class="card panel">
+    <div class="panel-bar">
+      <h2 data-i18n="eng.log">Engine log</h2>
+      <span class="small muted mono" id="logPath">—</span>
+      <button class="btn btn-sm" id="logRefresh" type="button"><svg class="ico"><use href="/icons.svg#i-refresh"></use></svg><span data-i18n="live.refresh">Refresh</span></button>
+    </div>
+    <pre class="log" id="engLog" data-i18n="common.loading">loading…</pre>
+  </article>
+</section>
+
+<!-- ──────────────────────────────────────────────────────── Model -->
+<section class="view" id="view-model" role="tabpanel" aria-labelledby="tab-model" hidden>
+  <div class="view-head">
+    <div>
+      <h1 data-i18n="model.title">Model</h1>
+      <p class="sub" data-i18n="model.sub">The loaded artifact and the files sitting on disk.</p>
+    </div>
+  </div>
+
+  <div class="two-col">
+    <article class="card panel">
+      <div class="panel-bar"><h2 data-i18n="model.loaded">Loaded</h2><span class="tag good" id="mdLoaded">—</span></div>
+      <dl class="facts">
+        <div class="fact"><dt data-i18n="model.alias">alias</dt><dd class="mono" id="mdId">—</dd></div>
+        <div class="fact"><dt data-i18n="model.path">path</dt><dd class="mono tiny" id="mdPath">—</dd></div>
+        <div class="fact"><dt data-i18n="rail.context">context</dt><dd id="mdCtx">—</dd></div>
+        <div class="fact"><dt data-i18n="model.modalities">modalities</dt><dd id="mdMod">—</dd></div>
+        <div class="fact"><dt data-i18n="model.vramNow">VRAM now</dt><dd id="mdVram">—</dd></div>
+      </dl>
+    </article>
+
+    <article class="card panel">
+      <div class="panel-bar"><h2 data-i18n="model.artifacts">Artifacts on disk</h2><span class="small muted" id="artTotal">—</span></div>
+      <div class="table-wrap">
+        <table class="table">
+          <thead><tr><th data-i18n="model.file">file</th><th data-i18n="model.size">size</th></tr></thead>
+          <tbody id="artBody"><tr class="empty-row"><td colspan="2" data-i18n="common.loading">loading…</td></tr></tbody>
+        </table>
+      </div>
+    </article>
+  </div>
+
+  <article class="card panel">
+    <div class="panel-bar"><h2 data-i18n="model.license">License note</h2><span class="small muted">Swift 1.5 · Qwen 3.8-27B</span></div>
+    <div class="panel-body prose"><p data-i18n="model.licenseBody">The base model is Apache 2.0. The Swift 1.5 artifact is free for individuals and organizations up to US$1,000,000 annual revenue; above that a Swift Enterprise License is required.</p></div>
+  </article>
+</section>
+
+</main>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<script src="/app.js?v=3"></script>
+</body>
+</html>
