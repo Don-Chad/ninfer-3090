@@ -91,6 +91,14 @@ class StudioHTTP(unittest.TestCase):
             self.assertTrue(result['already'])
             spawn.assert_not_called()
 
+    def test_loading_engine_remains_owned_before_opening_a_port(self):
+        ownership.record('engine', os.getpid())
+        with patch.object(S, 'fetch', return_value=(503, b'{}')), \
+                patch.object(S, 'gpu_thermal', return_value={}):
+            state = S.snapshot()
+            self.assertFalse(state['up'])
+            self.assertTrue(state['engine_owned'])
+
     def test_recycled_parent_cannot_claim_an_older_orphan(self):
         ownership.save({'engine': {'owned': {'10': '100'}}})
         births = {'10': '100', '20': '300', '30': '200'}

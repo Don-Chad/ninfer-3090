@@ -665,7 +665,7 @@ def snapshot():
     result["caps"] = caps
     result["pids"] = engine_pid() if result["up"] else []
     owned = ownership.claim("engine", result["pids"])
-    result["engine_owned"] = any(p in owned for p in result["pids"])
+    result["engine_owned"] = bool(owned)
     result["engine_exe"] = ENGINE_EXE
     result["config"] = {"config_file": CFG.get("_config_file"), "ui_port": UI_PORT,
                         "engine_url": UPSTREAM, "start_command": ENGINE.get("start_command"),

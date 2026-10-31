@@ -613,11 +613,11 @@ function applyCaps(caps, up, cfg, engineOwned) {
   // Start only makes sense when nothing is serving; Stop only when it is.
   const startBtn = $('#engStart');
   if (startBtn) {
-    startBtn.disabled = up;
+    startBtn.disabled = up || engineOwned;
     startBtn.title = up ? t('caps.startDisabled') : '';
   }
   const stopBtn = $('#engStop');
-  if (stopBtn) stopBtn.disabled = !up || !engineOwned;
+  if (stopBtn) stopBtn.disabled = !engineOwned;
 
   const metricsOk = !!(caps.metrics && caps.metrics.ok);
   const note = $('#metricsNote');
