@@ -1,0 +1,18 @@
+{
+  "engine": {
+    "host": "127.0.0.1",
+    "port": 8080,
+    "url": "",
+    "start_command": ["scripts/run", "qwen38-27b", "tuned"],
+    "startup_timeout_s": 900
+  },
+  "ui": {
+    "host": "127.0.0.1",
+    "port": 8090
+  },
+  "paths": {
+    "logs": "logs",
+    "models": "models"
+  },
+  "poll_ms": 2000
+}
