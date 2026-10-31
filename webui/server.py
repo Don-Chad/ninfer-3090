@@ -457,6 +457,8 @@ def _start_engine():
     if ENGINE_EXE:
         env.setdefault("NINFER_SERVER", ENGINE_EXE)
     args = list(cmd)
+    if args[0] == "scripts/run":
+        args[0] = os.path.join("scripts", "run.bat" if os.name == "nt" else "run.sh")
     if os.name == "nt":
         # run.bat is a batch file: it needs cmd.exe, and it must not inherit a
         # console window from the UI process.
@@ -855,7 +857,9 @@ def wait_upstream(seconds=None):
 
 class StudioServer(ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = False  # Windows: refuse a second bind instead of silently sharing the port
+    # Windows SO_REUSEADDR can share a live listener. POSIX needs it to restart
+    # after recently closed HTTP connections leave the address in TIME_WAIT.
+    allow_reuse_address = os.name != "nt"
 
     def handle_error(self, request, client_address):
         exc = sys.exc_info()[1]

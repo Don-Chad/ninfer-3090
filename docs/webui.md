@@ -16,8 +16,10 @@ scripts\stop-ui.bat           # stop what start-ui.bat started
 python webui\launcher.py status
 ```
 
-The two `scripts\*_ui.bat` wrappers are Windows-only; they only call
-`webui/launcher.py`, which is plain Python.
+On Linux, use `scripts/start-ui.sh` and `scripts/stop-ui.sh` (requires `uv`).
+The wrappers call `webui/launcher.py`, which is plain Python. The shipped
+`scripts/run` start command selects the repository's `run.bat` on Windows and
+`run.sh` on Linux; custom executable commands are used as configured.
 
 ## Requirements
 
@@ -89,7 +91,7 @@ defaults), or a path of your own with `--config`, or `STUDIO_CONFIG`.
     "host": "127.0.0.1",
     "port": 8080,
     "url": "",
-    "start_command": ["scripts\\run.bat", "qwen38-27b", "tuned"],
+    "start_command": ["scripts/run", "qwen38-27b", "tuned"],
     "startup_timeout_s": 900
   },
   "ui": { "host": "127.0.0.1", "port": 8090 },

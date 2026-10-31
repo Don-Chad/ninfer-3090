@@ -3,7 +3,7 @@
     "host": "127.0.0.1",
     "port": 8080,
     "url": "",
-    "start_command": ["scripts\\run.bat", "qwen38-27b", "tuned"],
+    "start_command": ["scripts/run", "qwen38-27b", "tuned"],
     "startup_timeout_s": 900
   },
   "ui": {
