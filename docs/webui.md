@@ -71,9 +71,12 @@ prints the port and pid and exits non-zero without touching it.
 scripts\stop-ui.bat
 ```
 
-Only pids recorded in `webui/.state/launcher.json` are stopped: the UI it
-launched, and the engine pids that appeared on the engine port after it launched
-one. An engine you started yourself keeps running and the launcher says so.
+Both the dashboard Stop button and the command-line launcher use the same
+ownership records in `webui/.state/launcher.json`. They stop only processes
+Studio started and verified descendants of those processes. Records include
+process creation times so a reused PID cannot claim an unrelated process.
+An engine you started yourself keeps running; its dashboard Stop button stays
+disabled. Failed starts can also be stopped before they open a listening port.
 
 ## Configuration
 
@@ -101,7 +104,7 @@ defaults), or a path of your own with `--config`, or `STUDIO_CONFIG`.
 | `engine.url` | full base URL; when set it wins over host/port (e.g. a remote box). |
 | `engine.start_command` | argv of the start command, relative to the repository root. Leave empty to use the Studio as a dashboard only. |
 | `engine.startup_timeout_s` | how long to wait for `/health` `200` before giving up. |
-| `ui.host` / `ui.port` | where the Studio listens. |
+| `ui.host` / `ui.port` | where the Studio listens; the host must be a loopback address or `localhost`. |
 | `paths.logs` / `paths.models` | relative to the repository root; `logs/` is where the launcher writes `engine.log` and `ui.log`. |
 | `poll_ms` | dashboard refresh interval (the UI currently polls every 2 s). |
 
@@ -120,6 +123,21 @@ scripts\start-ui.bat
 `NINFER_API_KEY` is read from the environment only (never from the JSON) and is
 forwarded as a bearer token to the engine. `/metrics` and `/v1/load` need it
 when the server was started with an API key.
+
+Studio is a local browser application. It validates the request Host and
+Origin, and its browser client includes `X-Ninfer-Studio: 1` on control and chat
+requests. Cross-origin control requests are rejected. Only bundled public UI
+assets are served; source, configuration and launcher state are private.
+The resolved `--config` file is forwarded to the UI subprocess as well as used
+by the launcher.
+
+## Regression tests
+
+Run `uv run --no-project --python 3.11 webui/test_studio.py -v` from the repository
+root. These standard-library tests need no model or GPU. They cover file-access
+boundaries, browser request validation, ownership and recycled PIDs, immediate
+stream delivery, and a real launcher start/stop/restart cycle with custom ports
+and a separate engine that must remain running.
 
 ## Temperatures
 

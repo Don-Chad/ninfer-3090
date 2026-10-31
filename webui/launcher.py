@@ -18,7 +18,6 @@ Design rules, because this touches a running inference server:
 * The UI is only opened after the engine answers /health with 200, which is
   how ninfer reports "model loaded and serving".
 """
-import json
 import os
 import socket
 import subprocess
@@ -31,21 +30,11 @@ import webbrowser
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import server as S  # noqa: E402  single source of truth for config and ports
 
-STATE_PATH = os.path.join(S.WEBUI_DIR, ".state", "launcher.json")
+STATE_PATH = str(S.ownership.STATE_PATH)
 
 
 def _load_state():
-    try:
-        with open(STATE_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return {}
-
-
-def _save_state(state):
-    os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
-    with open(STATE_PATH, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2)
+    return S.ownership.load()
 
 
 def http_status(url, path, timeout=2.0):
@@ -95,42 +84,6 @@ def wait_ready(timeout, on_poll=None):
     return False
 
 
-def _pid_image(pid):
-    """Image name of a pid, so a recycled pid is never killed by mistake."""
-    try:
-        if os.name == "nt":
-            res = subprocess.run(["tasklist", "/FI", "PID eq %s" % pid, "/FO", "CSV", "/NH"],
-                                 capture_output=True, text=True, timeout=10,
-                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            first = (res.stdout or "").splitlines()
-            if first and first[0].startswith('"'):
-                return first[0].split('","')[0].strip('"').lower()
-        else:
-            res = subprocess.run(["ps", "-p", str(pid), "-o", "comm="],
-                                 capture_output=True, text=True, timeout=10)
-            return (res.stdout or "").strip().lower()
-    except Exception:
-        pass
-    return ""
-
-
-ALLOWED_IMAGES = {"ninfer-serve.exe", "cmd.exe", "python.exe", "python3", "py.exe", "py"}
-
-
-def claim(pids):
-    """Add pids that belong to this launcher's own tree and still look like it."""
-    state = _load_state()
-    owned = {str(p) for p in (state.get("engine", {}).get("owned") or [])}
-    for pid in pids:
-        img = _pid_image(pid)
-        if img in ALLOWED_IMAGES:
-            owned.add(str(pid))
-    eng = state.get("engine") or {}
-    eng["owned"] = sorted(owned)
-    state["engine"] = eng
-    _save_state(state)
-
-
 def cmd_start(argv):
     no_browser = "--no-browser" in argv
     timeout = int(S.ENGINE.get("startup_timeout_s") or 900)
@@ -140,9 +93,6 @@ def cmd_start(argv):
         elif arg.startswith("--timeout="):
             timeout = int(arg.split("=", 1)[1])
 
-    state = _load_state()
-    state.setdefault("engine", {"owned": []})
-    state.setdefault("ui", {"owned": []})
 
     # ---- engine -------------------------------------------------------
     if engine_ready():
@@ -161,18 +111,11 @@ def cmd_start(argv):
             return 1
         say("[i] engine starting: %s (log: %s)" % (" ".join(started.get("command") or []),
                                                    started.get("log")))
-        state["engine"] = {"owned": [str(started["pid"])], "started_at": time.time(),
-                           "command": started.get("command")}
-        _save_state(state)
-        if not wait_ready(timeout, on_poll=lambda: claim(S.pids_on_port(S.UPSTREAM_PORT))):
+        if not wait_ready(timeout, on_poll=lambda: S.ownership.claim("engine", S.pids_on_port(S.UPSTREAM_PORT))):
             say("[x] engine did not become ready within %ds. See %s" % (timeout, S.ENGINE_LOG))
             say("    The launcher keeps what it started; run 'launcher.py stop' to clean up.")
             return 1
-        # the listening process is a child of the launcher shell: remember it too
-        owned = {str(p) for p in (state["engine"].get("owned") or [])} | set(S.pids_on_port(S.UPSTREAM_PORT))
-        state["engine"] = {"owned": sorted(owned), "started_at": state["engine"].get("started_at"),
-                           "command": state["engine"].get("command")}
-        _save_state(state)
+        S.ownership.claim("engine", S.pids_on_port(S.UPSTREAM_PORT))
         say("[ok] engine ready on %s" % S.UPSTREAM)
 
     # ---- web UI -------------------------------------------------------
@@ -190,12 +133,14 @@ def cmd_start(argv):
         flags = 0
         if os.name == "nt":
             flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        proc = subprocess.Popen([sys.executable, os.path.join(S.WEBUI_DIR, "server.py")],
+        ui_command = [sys.executable, os.path.join(S.WEBUI_DIR, "server.py")]
+        if S.CFG.get("_config_file"):
+            ui_command += ["--config", os.path.abspath(S.CFG["_config_file"])]
+        proc = subprocess.Popen(ui_command,
                                 cwd=S.PROJECT, stdout=log, stderr=subprocess.STDOUT,
                                 stdin=subprocess.DEVNULL, creationflags=flags if os.name == "nt" else 0)
         log.close()
-        state["ui"] = {"owned": [proc.pid], "started_at": time.time()}
-        _save_state(state)
+        S.ownership.record("ui", proc.pid)
         deadline = time.time() + 30
         while time.time() < deadline and not ui_ready():
             time.sleep(0.5)
@@ -218,50 +163,18 @@ def cmd_start(argv):
 
 
 def cmd_stop(argv):
-    state = _load_state()
     rc = 0
-
-    owned_ui = [str(p) for p in (state.get("ui", {}).get("owned") or [])]
-    killed, skipped = [], []
-    for pid in S.pids_on_port(S.UI_PORT):
-        (killed if pid in owned_ui and _pid_image(pid) in ALLOWED_IMAGES else skipped).append(pid)
-    if killed:
-        _kill(killed)
-        say("[ok] stopped web UI (pid %s)" % ", ".join(killed))
-    elif skipped:
-        say("[!] port %d is held by pid %s, which this launcher did not start - left alone."
-            % (S.UI_PORT, ",".join(skipped)))
-        rc = 1
-    else:
-        say("[i] web UI was not running")
-
-    owned_engine = [str(p) for p in (state.get("engine", {}).get("owned") or [])]
-    killed, skipped = [], []
-    for pid in S.pids_on_port(S.UPSTREAM_PORT):
-        (killed if pid in owned_engine and _pid_image(pid) in ALLOWED_IMAGES else skipped).append(pid)
-    if killed:
-        _kill(killed)
-        say("[ok] stopped engine (pid %s)" % ", ".join(killed))
-    elif skipped:
-        say("[!] engine on port %d (pid %s) was not started by this launcher - left running."
-            % (S.UPSTREAM_PORT, ",".join(skipped)))
-        rc = 1
-    else:
-        say("[i] engine was not running")
-
-    _save_state({})
-    say("[ok] done. ports %d and %d are %s." % (
-        S.UI_PORT, S.UPSTREAM_PORT,
-        "free" if not (port_busy(S.UI_PORT) or port_busy(S.UPSTREAM_PORT)) else "still in use"))
+    for kind, port in (("ui", S.UI_PORT), ("engine", S.UPSTREAM_PORT)):
+        result = S.ownership.stop(kind, S.pids_on_port(port))
+        if result["killed"]:
+            say("[ok] stopped %s (pid %s)" % (kind, ", ".join(result["killed"])))
+        if result["skipped"]:
+            say("[!] %s port %d: unowned pids %s left running" %
+                (kind, port, ", ".join(result["skipped"])))
+            rc = 1
+        if not result["killed"] and not result["skipped"]:
+            say("[i] %s was not running" % kind)
     return rc
-
-
-def _kill(pids):
-    for pid in pids:
-        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"] if os.name == "nt"
-                       else ["kill", "-TERM", str(pid)],
-                       capture_output=True, timeout=20,
-                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0)
 
 
 def cmd_status(argv):

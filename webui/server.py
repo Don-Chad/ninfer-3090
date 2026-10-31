@@ -24,7 +24,8 @@ environment only (NINFER_API_KEY, the same variable ninfer-serve reads).
 """
 import json
 import os
-import posixpath
+import ipaddress
+import ownership
 import re
 import shutil
 import subprocess
@@ -68,12 +69,12 @@ def _config_path():
     argv = sys.argv[1:]
     for i, arg in enumerate(argv):
         if arg == "--config" and i + 1 < len(argv):
-            return argv[i + 1]
+            return os.path.abspath(argv[i + 1])
         if arg.startswith("--config="):
-            return arg.split("=", 1)[1]
+            return os.path.abspath(arg.split("=", 1)[1])
     env = os.environ.get("STUDIO_CONFIG")
     if env:
-        return env
+        return os.path.abspath(env)
     return os.path.join(WEBUI_DIR, "studio.config.json")
 
 
@@ -122,6 +123,8 @@ UPSTREAM_PORT = int(ENGINE.get("port") or 8080)
 API_KEY = os.environ.get("NINFER_API_KEY", "")
 UI_PORT = int(UI.get("port") or 8090)
 UI_HOST = UI.get("host") or "127.0.0.1"
+if UI_HOST != "localhost" and not ipaddress.ip_address(UI_HOST).is_loopback:
+    raise ValueError("Studio must bind a loopback address; use a local browser")
 
 LOGS_DIR = os.path.join(PROJECT, CFG["paths"]["logs"])
 MODELS_DIR = os.path.join(PROJECT, CFG["paths"]["models"])
@@ -133,7 +136,7 @@ def _engine_exe():
     """Where ninfer-serve lives, following scripts/run.bat's own rule."""
     for env in (os.environ.get("NINFER_SERVER"), os.environ.get("NINFER_EXE")):
         if env and os.path.isfile(env):
-            return env
+            return os.path.abspath(env)
     candidates = [
         os.path.join(PROJECT, "build-ninja", "apps", "ninfer-serve.exe"),
         os.path.join(PROJECT, "build", "apps", "ninfer-serve.exe"),
@@ -429,7 +432,7 @@ def tail(path, n=60):
     return lines[-n:]
 
 
-def start_engine():
+def _start_engine():
     """Start the engine exactly the way the repository's own launcher does.
 
     The Studio deliberately does not own serving flags: it runs the configured
@@ -440,6 +443,9 @@ def start_engine():
     live = engine_pid()
     if live:
         return {"ok": True, "already": True, "pids": live}
+    pending = ownership.claim("engine", [])
+    if pending:
+        return {"ok": True, "already": True, "pids": pending}
     cmd = ENGINE.get("start_command") or []
     if not cmd:
         return {"ok": False, "error": "no engine.start_command configured "
@@ -468,20 +474,18 @@ def start_engine():
     proc = subprocess.Popen(shell_args, cwd=PROJECT, stdout=log, stderr=subprocess.STDOUT,
                             stdin=subprocess.DEVNULL, env=env, creationflags=flags if os.name == "nt" else 0)
     log.close()
+    ownership.record("engine", proc.pid)
     return {"ok": True, "pid": proc.pid, "command": shell_args, "log": ENGINE_LOG}
 
 
-def stop_engine(only_pids=None):
-    """Stop the engine. `only_pids` limits the kill to processes the caller owns."""
-    live = engine_pid()
-    targets = [p for p in live if not only_pids or p in only_pids]
-    if not targets:
-        return {"ok": True, "killed": [], "skipped": live}
-    for pid in targets:
-        subprocess.run(["taskkill", "/PID", pid, "/T", "/F"] if os.name == "nt" else ["kill", "-TERM", pid],
-                       capture_output=True, timeout=20,
-                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0)
-    return {"ok": True, "killed": targets, "skipped": [p for p in live if p not in targets]}
+def start_engine():
+    with ownership.LOCK:
+        return _start_engine()
+
+
+def stop_engine():
+    """Ownership is determined by the server, never by a caller's PID list."""
+    return ownership.stop("engine", engine_pid())
 
 
 def model_action(action):
@@ -658,6 +662,8 @@ def snapshot():
     caps = capabilities()
     result["caps"] = caps
     result["pids"] = engine_pid() if result["up"] else []
+    owned = ownership.claim("engine", result["pids"])
+    result["engine_owned"] = any(p in owned for p in result["pids"])
     result["engine_exe"] = ENGINE_EXE
     result["config"] = {"config_file": CFG.get("_config_file"), "ui_port": UI_PORT,
                         "engine_url": UPSTREAM, "start_command": ENGINE.get("start_command"),
@@ -693,12 +699,35 @@ class Handler(BaseHTTPRequestHandler):
         self._send(code, json.dumps(obj, ensure_ascii=False))
 
     def _safe_static(self, name):
-        path = posixpath.normpath(name).lstrip("/")
-        if path.startswith("..") or not os.path.isfile(os.path.join(WEBUI_DIR, path)):
+        # Only bundled public assets are served. Config, source and runtime
+        # state must never become downloadable, even inside WEBUI_DIR.
+        if name not in ("/fonts/outfit-latin-wght.woff2", "/fonts/outfit-latin-ext-wght.woff2"):
             return None
-        return os.path.join(WEBUI_DIR, path)
+        root = os.path.realpath(WEBUI_DIR)
+        path = os.path.realpath(os.path.join(root, name.lstrip("/")))
+        if os.path.commonpath([root, path]) != root or not os.path.isfile(path):
+            return None
+        return path
+
+    def _trusted_request(self, changing=False):
+        port = self.server.server_port
+        allowed = {"127.0.0.1:%d" % port, "localhost:%d" % port,
+                   "[::1]:%d" % port, "%s:%d" % (UI_HOST, port)}
+        host = self.headers.get("Host", "").lower()
+        origin = self.headers.get("Origin")
+        if host not in allowed or (origin and origin != "http://" + host):
+            self.close_connection = True
+            self._json({"error": "Untrusted Host or Origin"}, 403)
+            return False
+        if changing and self.headers.get("X-Ninfer-Studio") != "1":
+            self.close_connection = True
+            self._json({"error": "Missing Studio request header"}, 403)
+            return False
+        return True
 
     def do_GET(self):
+        if not self._trusted_request():
+            return
         path = self.path.split("?", 1)[0]
         if path in _STATIC:
             fname, ctype = _STATIC[path]
@@ -734,21 +763,19 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, "not found", "text/plain; charset=utf-8")
 
     def do_POST(self):
+        if not self._trusted_request(changing=True):
+            return
         path = self.path.split("?", 1)[0]
 
         if path == "/api/engine/start":
             self._json(start_engine())
             return
         if path == "/api/engine/stop":
-            body = b""
-            n = int(self.headers.get("Content-Length") or 0)
-            if n:
-                body = self.rfile.read(n) or b""
-            try:
-                only = (json.loads(body or b"{}") or {}).get("only_pids")
-            except Exception:
-                only = None
-            self._json(stop_engine(only_pids=only))
+            # Close after responding rather than interpreting an unused body as
+            # another HTTP request on this connection.
+            self.close_connection = True
+            result = stop_engine()
+            self._json(result, 200 if result["ok"] else 409)
             return
         if path in ("/api/model/suspend", "/api/model/resume"):
             action = path.rsplit("/", 1)[-1]
@@ -804,7 +831,7 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             while True:
-                buf = up.read(2048)
+                buf = up.read1(2048)
                 if not buf:
                     break
                 chunk(buf)

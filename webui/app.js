@@ -447,7 +447,7 @@ function toast(msg, kind) {
 }
 
 async function api(path, opts) {
-  const res = await fetch(path, opts);
+  const res = await fetch(path, { ...opts, headers: { ...opts?.headers, 'X-Ninfer-Studio': '1' } });
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch (_) { data = { raw: text }; }
@@ -599,7 +599,7 @@ function renderThermal(st) {
 // The engine is an external service with an optional capability set. Anything
 // the running build does not answer for is disabled or labelled here, so the
 // dashboard cannot show a control that would fail or a number it never got.
-function applyCaps(caps, up, cfg) {
+function applyCaps(caps, up, cfg, engineOwned) {
   caps = caps || {};
   // suspend needs both: the endpoint present and the profile started with it
   const canSuspend = up && !!(caps.suspend ? caps.suspend.ok : (caps.residency && caps.residency.ok));
@@ -617,7 +617,7 @@ function applyCaps(caps, up, cfg) {
     startBtn.title = up ? t('caps.startDisabled') : '';
   }
   const stopBtn = $('#engStop');
-  if (stopBtn) stopBtn.disabled = !up;
+  if (stopBtn) stopBtn.disabled = !up || !engineOwned;
 
   const metricsOk = !!(caps.metrics && caps.metrics.ok);
   const note = $('#metricsNote');
@@ -646,7 +646,7 @@ function renderState(st) {
   state = st;
   const m = st.metrics || {};
   const up = !!st.up;
-  applyCaps(st.caps, up, st.config);
+  applyCaps(st.caps, up, st.config, st.engine_owned);
   if (up && !firstUpAt) firstUpAt = Date.now();
   if (!up) firstUpAt = null;
 
@@ -852,7 +852,7 @@ async function engineAction(path, okKey, opts) {
     btns.forEach((b) => { b.disabled = false; });
     // re-apply the capability rules so a finished action cannot leave Start
     // clickable while the engine is up or suspend clickable when it is off
-    if (state) applyCaps(state.caps, !!state.up, state.config);
+    if (state) applyCaps(state.caps, !!state.up, state.config, state.engine_owned);
   }
 }
 
@@ -1145,7 +1145,7 @@ $('#form').addEventListener('submit', async (e) => {
   try {
     const res = await fetch('/api/chat', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Ninfer-Studio': '1' },
       body: JSON.stringify(payload),
       signal: abortCtrl.signal
     });
